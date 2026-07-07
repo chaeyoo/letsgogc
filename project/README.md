@@ -148,7 +148,7 @@ project/
 └── tests/test_rag.py         # ✅ 스모크 테스트
 ```
 
-자세한 설계 근거는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 참조.
+📎 함께 보기: [`docs/프로젝트_소개서.md`](docs/프로젝트_소개서.md)(필요성·페르소나·사용법·구조, 이미지 포함) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)(설계 결정 노트) · [`docs/포트폴리오_자소서3_소재.md`](docs/포트폴리오_자소서3_소재.md)
 
 ---
 
