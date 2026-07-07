@@ -1,0 +1,36 @@
+"""프로젝트 전역 설정.
+
+환경변수로 동작 모드를 제어한다.
+- ANTHROPIC_API_KEY 가 있으면 실제 Claude(Enterprise LLM API)로 에이전트가 동작한다.
+- 없으면 오프라인 모드로 폴백한다(검색 근거 기반 추출형 답변). 데모는 키 없이도 항상 실행된다.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+# 경로
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+REG_DIR = DATA_DIR / "regulations"
+RA_TASKS_FILE = DATA_DIR / "ra_tasks.json"
+WEB_DIR = BASE_DIR / "web"
+
+# LLM (Enterprise LLM API) 설정 — 있으면 사용, 없으면 오프라인 폴백
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-8")
+LLM_AVAILABLE = bool(ANTHROPIC_API_KEY)
+
+# RAG 하이퍼파라미터 (RAG '최적화'의 손잡이들)
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "500"))       # 청크 크기(문자)
+CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "80"))  # 겹침(경계 손실 방지)
+RETRIEVE_TOP_K = int(os.environ.get("RETRIEVE_TOP_K", "8"))  # 1차 회수 개수
+RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "3"))     # 리랭킹 후 최종 개수
+HYBRID_ALPHA = float(os.environ.get("HYBRID_ALPHA", "0.5"))  # 벡터(TF-IDF) vs 키워드(BM25) 가중
+
+
+def mode_banner() -> str:
+    """현재 실행 모드를 한 줄로 반환(로그/헬스체크용)."""
+    if LLM_AVAILABLE:
+        return f"[LLM 모드] Enterprise LLM API 사용 · model={LLM_MODEL}"
+    return "[오프라인 모드] API 키 없음 → 검색 근거 기반 추출형 답변으로 폴백"
