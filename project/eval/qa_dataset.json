@@ -1,0 +1,101 @@
+{
+  "_comment": "RAG 검색 평가용 QA셋. relevant_doc_id = 정답 근거 문서. keywords = 답변에 반드시 포함되어야 할 핵심어(faithfulness 근사 채점).",
+  "items": [
+    {
+      "question": "신약 품목허가 심사는 며칠 이내에 처리되나요?",
+      "relevant_doc_id": "REG-001",
+      "relevant_section_hint": "심사 기간",
+      "keywords": ["120", "근무일"]
+    },
+    {
+      "question": "제네릭 의약품 허가 처리기한은?",
+      "relevant_doc_id": "REG-001",
+      "relevant_section_hint": "심사 기간",
+      "keywords": ["60", "근무일"]
+    },
+    {
+      "question": "변경허가와 변경신고는 어떻게 구분되나요?",
+      "relevant_doc_id": "REG-002",
+      "relevant_section_hint": "변경 유형",
+      "keywords": ["변경허가", "변경신고"]
+    },
+    {
+      "question": "변경신고는 며칠 이내에 수리 통보되나요?",
+      "relevant_doc_id": "REG-002",
+      "relevant_section_hint": "처리기한",
+      "keywords": ["7", "근무일"]
+    },
+    {
+      "question": "GMP 데이터 완전성 ALCOA 원칙은 무엇인가요?",
+      "relevant_doc_id": "REG-003",
+      "relevant_section_hint": "데이터 완전성",
+      "keywords": ["귀속성", "원본"]
+    },
+    {
+      "question": "공정 밸리데이션은 보통 몇 배치로 하나요?",
+      "relevant_doc_id": "REG-003",
+      "relevant_section_hint": "밸리데이션",
+      "keywords": ["3배치"]
+    },
+    {
+      "question": "의약품 용기에 반드시 기재해야 하는 사항은?",
+      "relevant_doc_id": "REG-004",
+      "relevant_section_hint": "용기",
+      "keywords": ["사용기한", "제조번호"]
+    },
+    {
+      "question": "중대한 이상사례는 며칠 이내에 보고해야 하나요?",
+      "relevant_doc_id": "REG-005",
+      "relevant_section_hint": "이상사례 보고",
+      "keywords": ["15일"]
+    },
+    {
+      "question": "PSUR 정기 안전성 보고 주기는 어떻게 되나요?",
+      "relevant_doc_id": "REG-005",
+      "relevant_section_hint": "정기적 안전성 보고",
+      "keywords": ["PSUR"]
+    },
+    {
+      "question": "임상시험계획 승인(IND)은 며칠 이내에 처리되나요?",
+      "relevant_doc_id": "REG-006",
+      "relevant_section_hint": "처리기한",
+      "keywords": ["30", "근무일"]
+    },
+    {
+      "question": "임상시험은 어떤 관리기준을 준수해야 하나요?",
+      "relevant_doc_id": "REG-006",
+      "relevant_section_hint": "GCP",
+      "keywords": ["GCP"]
+    },
+    {
+      "question": "재심사 기간은 보통 몇 년인가요?",
+      "relevant_doc_id": "REG-005",
+      "relevant_section_hint": "재심사",
+      "keywords": ["6년"]
+    },
+    {
+      "question": "약을 만드는 시설에서 서로 다른 제품이 섞이는 것을 막는 기본 원칙은?",
+      "relevant_doc_id": "REG-003",
+      "relevant_section_hint": "3대 원칙",
+      "keywords": ["교차오염", "혼동"]
+    },
+    {
+      "question": "부작용이 심각하게 나타났을 때 당국에 얼마나 빨리 알려야 하나요?",
+      "relevant_doc_id": "REG-005",
+      "relevant_section_hint": "이상사례 보고",
+      "keywords": ["15일"]
+    },
+    {
+      "question": "허가를 받은 뒤에도 안전성 자료를 계속 제출해야 하나요?",
+      "relevant_doc_id": "REG-005",
+      "relevant_section_hint": "정기적 안전성 보고",
+      "keywords": ["PSUR"]
+    },
+    {
+      "question": "제품 설명서에 경고 문구는 어디에 표시하나요?",
+      "relevant_doc_id": "REG-004",
+      "relevant_section_hint": "첨부문서",
+      "keywords": ["경고"]
+    }
+  ]
+}
