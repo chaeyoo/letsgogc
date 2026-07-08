@@ -24,6 +24,11 @@ class Chunk:
     title: str          # 문서 제목
     section: str        # 소속 섹션(헤딩) 제목
     text: str
+    # 버전 인지 검색용 메타(규제 산업 필수: 개정/폐지 이력 추적)
+    version: str = ""
+    effective_date: str = ""   # ISO(YYYY-MM-DD) 시행일
+    status: str = "active"     # active | superseded
+    superseded_by: str = ""    # 폐지된 경우 대체 문서 doc_id
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -83,6 +88,10 @@ def chunk_documents(
                         # 검색 정확도를 위해 문서/섹션 제목을 본문 앞에 덧붙임
                         # (Contextual Retrieval 아이디어의 경량 버전)
                         text=f"[{doc.title} > {section}]\n{window}",
+                        version=str(doc.metadata.get("version", "")),
+                        effective_date=str(doc.metadata.get("effective_date", "")),
+                        status=str(doc.metadata.get("status", "active")),
+                        superseded_by=str(doc.metadata.get("superseded_by", "")),
                         metadata={**doc.metadata, "section": section},
                     )
                 )

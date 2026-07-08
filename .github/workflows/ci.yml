@@ -1,0 +1,33 @@
+name: RA-Assistant CI
+
+# RAG/MCP/Agent 데모의 회귀 방지 — 테스트 + 검색품질/신뢰성 평가를 매 푸시마다 실행.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: project
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests (pytest)
+        run: pytest
+
+      - name: RAG 검색 품질 평가 (회귀 확인)
+        run: python -m eval.evaluate
+
+      - name: 답변 신뢰성(faithfulness) 평가
+        run: python -m eval.faithfulness

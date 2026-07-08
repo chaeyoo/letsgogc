@@ -27,6 +27,10 @@
     line-height: 1.6; font-size: 14px; }
   .msg.user .bubble { background: var(--user); }
   .msg.bot .bubble { background: var(--panel); border: 1px solid var(--line); }
+  .meta { margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.ok { color: var(--accent); border-color: var(--accent); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
   .trace { margin-top: 9px; font-size: 12px; color: var(--muted); }
   .trace .tool { display: inline-block; background: var(--panel2); border: 1px solid var(--line);
     border-radius: 6px; padding: 2px 8px; margin: 2px 4px 2px 0; }
@@ -112,6 +116,13 @@ function addMsg(role, text) {
 
 function renderBot(bubble, data) {
   let html = esc(data.answer);
+  // 근거 상태 배지: 근거 기반 답변 vs 근거 없음(abstention)
+  const gb = data.grounded === false
+    ? `<span class="pill warn">⚠ 근거 없음(추측 안 함)</span>`
+    : `<span class="pill ok">✓ 근거 기반</span>`;
+  const lat = (typeof data.latency_ms === 'number')
+    ? `<span class="pill">⚡ ${data.latency_ms} ms</span>` : '';
+  html += `<div class="meta">${gb}${lat}</div>`;
   if (data.tool_calls && data.tool_calls.length) {
     html += `<div class="trace">🔧 호출한 MCP 도구: ` +
       data.tool_calls.map(t => `<span class="tool">${esc(t.name)} · ${esc(t.summary||'')}</span>`).join('') +
@@ -119,12 +130,18 @@ function renderBot(bubble, data) {
   }
   if (data.citations && data.citations.length) {
     html += `<div class="cites">📄 근거 출처:` +
-      data.citations.map(c => `<div class="cite"><b>${esc(c.title||'')}</b> › ${esc(c.section||'')} <span style="opacity:.6">(${esc(c.source||'')})</span></div>`).join('') +
+      data.citations.map(c => {
+        const ver = c.version ? ` <span style="opacity:.55">v${esc(c.version)} · 시행 ${esc(c.effective_date||'')}</span>` : '';
+        return `<div class="cite"><b>${esc(c.title||'')}</b> › ${esc(c.section||'')} <span style="opacity:.6">(${esc(c.source||'')})</span>${ver}</div>`;
+      }).join('') +
       `</div>`;
   }
   bubble.innerHTML = html;
   log.scrollTop = log.scrollHeight;
 }
+
+// 멀티턴: 최근 대화 이력을 유지해 후속질문("그럼 그건?")이 맥락을 잇게 한다.
+const history = [];
 
 async function send() {
   const message = input.value.trim();
@@ -136,10 +153,14 @@ async function send() {
   try {
     const res = await fetch('/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ message, history: [] })
+      body: JSON.stringify({ message, history })
     });
     const data = await res.json();
     renderBot(bubble, data);
+    // 이력 갱신(최근 6턴만 유지)
+    history.push({ role: 'user', content: message });
+    history.push({ role: 'assistant', content: data.answer });
+    while (history.length > 6) history.shift();
   } catch (e) {
     bubble.textContent = '오류가 발생했습니다: ' + e;
   } finally {

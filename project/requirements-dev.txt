@@ -1,0 +1,4 @@
+# 개발/테스트 전용 의존성 (런타임 requirements.txt 와 분리)
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
