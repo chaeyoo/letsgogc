@@ -141,6 +141,49 @@ def get_submission_checklist(category: str) -> dict:
     return {"category": category, "items": checklists[category]}
 
 
+@mcp.tool
+def assess_adverse_event(case_description: str, awareness_date: str = "") -> dict:
+    """이상사례(AE) 케이스를 트리아지한다: 중대성(Serious) 판정 + 보고 경로/기한 계산.
+
+    "환자가 복용 후 입원했는데 언제까지 보고해야 하나" 같은 '구체적 케이스'가
+    주어졌을 때 사용한다. (규정 자체가 궁금한 질문은 search_regulations 를 사용.)
+
+    규칙 기반(결정론적)으로 판정한다 — 보고기한 계산은 컴플라이언스라 LLM 추론이
+    아닌 감사 가능한 규칙으로 수행하고, 판정 근거 규정(REG-005) 문단을 함께 반환한다.
+    입력 속 개인정보(주민번호·연락처·이름 등)는 반환 전에 마스킹된다.
+
+    Args:
+        case_description: 이상사례 케이스 서술 (예: "환자가 복용 3일 후 아나필락시스로 입원").
+        awareness_date: 회사 인지일(YYYY-MM-DD). 생략 시 오늘 기준으로 기한을 계산.
+
+    Returns:
+        {"case", "is_serious", "criteria_met", "expectedness", "route",
+         "awareness_date", "deadline_date", "rationale", "caveats",
+         "basis": {"results": [...]}}  — basis 는 판정 근거 규정 문단(출처 포함).
+    """
+    from ..pv.redactor import redact
+    from ..pv.triage import assess_case
+
+    masked = redact(case_description)  # 심층방어: 도구 단독 사용(stdio) 시에도 PII 비노출
+    t = assess_case(masked.text, awareness_date)
+    # 판정 근거 규정 문단을 RAG로 회수해 부착(추적성) — 보고기한의 출처는 REG-005
+    basis = search_regulations("중대한 이상사례 보고 기한 신속보고", top_n=2)
+    return {
+        "case": masked.text,
+        "pii_masked": masked.summary(),
+        "is_serious": t.is_serious,
+        "criteria_met": t.criteria_met,
+        "expectedness": t.expectedness,
+        "route": t.route,
+        "awareness_date": t.awareness_date,
+        "deadline_days": t.deadline_days,
+        "deadline_date": t.deadline_date,
+        "rationale": t.rationale,
+        "caveats": t.caveats,
+        "basis": basis,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------

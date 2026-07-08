@@ -12,11 +12,12 @@
                                                      └─embed─▶ 벡터 인덱스(+BM25 인덱스)
 
 [질의 시]
- 사용자 질문 ─▶ FastAPI /chat ─▶ RaAgent.chat()
+ 사용자 질문 ─▶ FastAPI /chat ─▶ RaAgent.chat() ─▶ 🔒 PII 마스킹(입구, 이후 전 경로 안전)
      ├─(LLM 모드)  Claude ⇄ MCP 도구 tool-use 루프 (관찰→생각→행동 반복)
      └─(오프라인)  규칙 라우터 ─▶ MCP 도구 1회 호출 ─▶ grounded 답변 조립
                                    │
-                     search_regulations ─▶ RAG(하이브리드 검색→리랭킹) ─▶ 근거+출처
+                     search_regulations ─▶ RAG(질의확장→하이브리드 검색→리랭킹) ─▶ 근거+출처
+                     assess_adverse_event ─▶ PV 트리아지(중대성 판정+기한 계산, 규칙) ─▶ 근거 규정 부착
                      get_ra_deadlines / get_submission_checklist ─▶ 업무 데이터
 ```
 
@@ -45,13 +46,24 @@
 > **Bi-Encoder vs Cross-Encoder** 개념을 코드로 표현: 1차는 빠른 벡터 유사도(넓게),
 > 2차는 질의-청크를 함께 보는 정밀 재정렬(좁게). 실무에선 2차를 실제 Cross-Encoder/LLM 리랭커로 교체.
 
+### 2.4 질의 확장 (`rag/synonyms.py`)
+- 사용자 구어("부작용"·"설명서")와 문서 정식 용어("이상사례"·"첨부문서")의
+  **어휘 불일치**를 도메인 동의어 사전으로 메운다(단방향: 구어→정식 용어).
+- **1단계 회수에만 적용**하고 2단계 리랭킹은 **원 질의로** 재점수 — 확장어가
+  정밀도 신호를 희석하지 않게 회수/정밀 역할을 분리. Hit@1 0.867→0.900(eval 검증).
+- LLM 질의 재작성 대비 결정론적(감사 가능)·저지연·무비용. 사전 항목은 eval로
+  검증해 채택/제외한다(예: "DMF" 확장은 주제 표류를 일으켜 제외).
+
 ## 3. MCP 서버 (`mcp_server/server.py`)
 
 - **왜 MCP인가:** 도구와 모델을 표준 규격으로 분리하면 N×M 통합이 N+M으로 준다.
   GC `Hey.GC 2.0`이 사내 시스템을 MCP로 통합하는 것과 같은 이유.
 - **노출 primitive:**
-  - Tools: `search_regulations`, `get_ra_deadlines`, `get_submission_checklist`, `list_regulation_documents`
+  - Tools: `search_regulations`, `assess_adverse_event`(PV 트리아지), `get_ra_deadlines`,
+    `get_submission_checklist`, `list_regulation_documents`
   - Resource: `regulation://{doc_id}` (문서 원문)
+- **결정론적 도구 원칙:** 보고기한 계산 같은 컴플라이언스 판정은 LLM이 아니라
+  규칙 기반 도구(`src/pv/triage.py`)가 수행한다 — LLM은 도구 선택·설명만 담당.
 - **도구 설명이 곧 LLM의 사용설명서:** 각 도구의 docstring·타입힌트가 에이전트의
   도구 선택 정확도를 좌우한다 → FDE의 실력이 드러나는 지점.
 - **두 실행 모드:** stdio(독립 실행, Claude Desktop/Cursor 연결) / 인메모리(`Client(mcp)`, 데모 기본).
@@ -71,10 +83,12 @@
 | **출처·버전 추적** | 모든 검색 답변에 문서·섹션·**버전·시행일** citation 부착 |
 | **환각 억제** | 근거 관련도+커버리지 두 신호로 **abstention**(근거 없으면 "모른다") · grounded 검색 강제 |
 | **버전 안전성** | 폐지(superseded) 구판 자동 제외 · `as_of`로 과거 시점 규정 조회 |
+| **개인정보 보호** | 에이전트 입구에서 **PII 마스킹**(`pv/redactor.py`) — 외부 LLM API·로그·트레이스에 원문 비유출, 응답엔 유형·건수만 |
+| **컴플라이언스 계산 분리** | 보고기한·중대성 판정은 **규칙 기반 도구**(`pv/triage.py`) — LLM 추론에 맡기지 않아 감사 가능 |
 | **가용성** | LLM 키 없이도 폴백 동작(무중단 데모) |
 | **견고성** | MCP 도구 실패를 크래시 대신 흡수해 모델에 되먹임(자가 복구) |
 | **관측성** | 스텝별 지연·성패를 span 트레이스+구조화 로그로 기록(`observability.py`), 응답에 `trace`·`latency_ms` 노출 |
-| **검증성** | pytest 29케이스 + eval(검색·신뢰성)을 CI에서 매 푸시 실행 |
+| **검증성** | pytest 46케이스 + eval(검색·신뢰성)을 CI에서 매 푸시 실행 |
 | **확장성** | MCP로 도구 분리 · `EmbeddingProvider`로 임베더 교체(TF-IDF/해싱/Voyage) |
 
 ### 5.1 답변 신뢰성 측정 (`eval/faithfulness.py`)

@@ -87,5 +87,6 @@ class RagPipeline:
             rerank_n=rerank_n,
             as_of=as_of,
             include_superseded=include_superseded,
+            expand=config.QUERY_EXPANSION,
         )
         return RetrievedContext(query=query, chunks=results)

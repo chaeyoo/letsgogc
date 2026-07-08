@@ -17,6 +17,7 @@ from collections import Counter
 
 from .chunker import Chunk
 from .embedder import cosine
+from .synonyms import expand_query
 from .textutil import tokenize
 from .vectorstore import InMemoryVectorStore, Scored
 
@@ -175,12 +176,18 @@ class HybridRetriever:
         rerank_n: int,
         as_of: str = "",
         include_superseded: bool = False,
+        expand: bool = True,
     ) -> list[Scored]:
-        """최종 검색: 하이브리드 top_k → 리랭킹 → 상위 rerank_n 반환.
+        """최종 검색: (질의 확장) → 하이브리드 top_k → 리랭킹 → 상위 rerank_n 반환.
 
         as_of / include_superseded 로 버전 인지 검색을 제어한다.
+
+        질의 확장은 '1단계 회수'에만 적용한다("부작용"→"이상사례" 같은
+        어휘 불일치를 메워 recall 확보). 2단계 리랭킹은 원 질의로 재점수해
+        확장어가 정밀도 신호를 희석하지 않게 한다(회수/정밀 역할 분리).
         """
-        first = self._hybrid(query, top_k, as_of, include_superseded)
+        q1 = expand_query(query) if expand else query
+        first = self._hybrid(q1, top_k, as_of, include_superseded)
         if not first:
             return []
         # 1차 하이브리드 점수를 prior 로 블렌딩(순수 재정렬은 쉬운 질의를 오히려 떨어뜨림).

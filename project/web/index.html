@@ -78,6 +78,7 @@
 const EXAMPLES = [
   "품목허가 심사 기간은 얼마나 걸리나요?",
   "중대한 이상사례는 며칠 안에 보고해야 하나요?",
+  "환자가 복용 후 아나필락시스로 입원했습니다. 언제까지 보고해야 하나요?",
   "이번 주 마감 임박한 규제 업무 알려줘",
   "변경허가 준비 체크리스트 알려줘",
   "GMP 데이터 완전성(ALCOA) 원칙이 뭐야?",
@@ -122,7 +123,10 @@ function renderBot(bubble, data) {
     : `<span class="pill ok">✓ 근거 기반</span>`;
   const lat = (typeof data.latency_ms === 'number')
     ? `<span class="pill">⚡ ${data.latency_ms} ms</span>` : '';
-  html += `<div class="meta">${gb}${lat}</div>`;
+  // PII 마스킹 배지: 개인정보가 외부 LLM/로그로 나가기 전에 마스킹됐음을 표시
+  const red = (data.redactions && data.redactions.length)
+    ? `<span class="pill warn">🔒 개인정보 마스킹: ${data.redactions.map(r => `${esc(r.type)} ${r.count}건`).join(', ')}</span>` : '';
+  html += `<div class="meta">${gb}${lat}${red}</div>`;
   if (data.tool_calls && data.tool_calls.length) {
     html += `<div class="trace">🔧 호출한 MCP 도구: ` +
       data.tool_calls.map(t => `<span class="tool">${esc(t.name)} · ${esc(t.summary||'')}</span>`).join('') +
