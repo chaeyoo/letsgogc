@@ -40,9 +40,9 @@ def _context_recall(context_text: str, keywords: list[str]) -> float:
 
 
 def _retrieve(pipe: RagPipeline, mode: str, question: str, top_k: int, rerank_n: int):
-    """검색 모드별 결과 반환. mode: 'vector' | 'hybrid' | 'rerank'.
+    """검색 모드별 결과 반환. mode: 'vector' | 'hybrid' | 'rerank' | 'expand'.
 
-    세 모드 모두 동일한 버전 인지 후보군(폐지본 제외)에서 검색해 공정 비교한다.
+    네 모드 모두 동일한 버전 인지 후보군(폐지본 제외)에서 검색해 공정 비교한다.
     """
     if mode == "vector":
         # 벡터(TF-IDF 코사인) 단독
@@ -50,8 +50,13 @@ def _retrieve(pipe: RagPipeline, mode: str, question: str, top_k: int, rerank_n:
     if mode == "hybrid":
         # 벡터+BM25 하이브리드 (리랭킹 없음)
         return pipe.retriever._hybrid(question, top_k)[:rerank_n]
-    # 하이브리드 + 리랭킹
-    return pipe.retriever.retrieve(question, top_k=top_k, rerank_n=rerank_n)
+    if mode == "rerank":
+        # 하이브리드 + 리랭킹 (질의 확장 없음)
+        return pipe.retriever.retrieve(
+            question, top_k=top_k, rerank_n=rerank_n, expand=False
+        )
+    # 도메인 동의어 질의 확장 + 하이브리드 + 리랭킹 (운영 기본값)
+    return pipe.retriever.retrieve(question, top_k=top_k, rerank_n=rerank_n, expand=True)
 
 
 def evaluate(mode: str, top_k: int, rerank_n: int, pipe: RagPipeline | None = None) -> dict:
@@ -112,6 +117,7 @@ def main() -> None:
         ("① 벡터만", "vector"),
         ("② 하이브리드", "hybrid"),
         ("③ +리랭킹", "rerank"),
+        ("④ +질의확장", "expand"),
     ]
     res = {name: evaluate(mode, top_k, rerank_n, pipe=pipe) for name, mode in cols}
 
@@ -128,6 +134,8 @@ def main() -> None:
     print("   리랭킹이 정답 문서를 1순위로 되돌린다 → 이 컬럼이 'RAG 최적화'의 핵심 근거.")
     print(" - mean_ms: 질의당 평균 검색 지연. 리랭킹은 정밀도를 얻는 대신 지연이 늘어난다")
     print("   (정밀도↔속도 트레이드오프). 폐지본(REG-013)은 버전 필터로 기본 제외된다.")
+    print(" - ④ 질의확장: 도메인 동의어 사전('부작용'→'이상사례')으로 어휘 불일치를 메워")
+    print("   Hit@1이 오른다. 확장은 1단계 회수에만 적용, 리랭킹은 원 질의로 재점수.")
 
     # --- 임베딩 provider 비교(pluggable 실증) ---
     print()

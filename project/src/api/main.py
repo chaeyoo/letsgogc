@@ -51,6 +51,7 @@ class ChatResponse(BaseModel):
     grounded: bool = True
     trace: list[dict] = Field(default_factory=list)
     latency_ms: float = 0.0
+    redactions: list[dict] = Field(default_factory=list)  # PII 마스킹 내역(유형·건수만)
 
 
 @app.get("/health")
@@ -87,6 +88,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         grounded=result.grounded,
         trace=result.trace,
         latency_ms=result.latency_ms,
+        redactions=result.redactions,
     )
 
 

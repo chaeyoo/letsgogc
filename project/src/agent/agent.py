@@ -21,6 +21,7 @@ from fastmcp import Client
 from .. import config
 from ..mcp_server.server import mcp
 from ..observability import Trace, timed
+from ..pv.redactor import redact
 from ..rag.textutil import tokenize
 
 # 근거 부족(abstention) 판단 임계값 — 제약 규제 도메인의 환각 안전장치.
@@ -56,6 +57,7 @@ class AgentResult:
     grounded: bool = True          # 검색 근거로 뒷받침된 답변인지(abstention이면 False)
     trace: list[dict] = field(default_factory=list)   # 스텝별 지연·성패(관측성)
     latency_ms: float = 0.0        # 총 처리 지연
+    redactions: list[dict] = field(default_factory=list)  # PII 마스킹 내역(유형·건수만)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +106,11 @@ class RaAgent:
     async def chat(self, message: str, history: list[dict] | None = None) -> AgentResult:
         history = history or []
         trace = Trace()
+        # PII 마스킹은 '에이전트 입구'에서 — 이후의 모든 경로(외부 LLM API·검색·
+        # 로그·트레이스)에 원문 개인정보가 흘러들지 않는다. 원 값은 보존하지 않는다.
+        red = redact(message)
+        message = red.text
+        history = _redact_history(history)  # 클라이언트가 보낸 이전 턴에도 PII가 있을 수 있다
         with timed(trace, "chat", "agent", {"mode": "llm" if config.LLM_AVAILABLE else "offline"}):
             if config.LLM_AVAILABLE:
                 result = await self._chat_llm(message, history, trace)
@@ -111,6 +118,7 @@ class RaAgent:
                 result = await self._chat_offline(message, history, trace)
         result.trace = trace.to_list()
         result.latency_ms = trace.total_ms
+        result.redactions = red.summary()
         return result
 
     # ---- LLM 모드: 실제 tool-use 루프 ----
@@ -155,8 +163,11 @@ class RaAgent:
                     data, is_error = await self._safe_tool_call(
                         mcp_client, block.name, dict(block.input), trace
                     )
-                    if not is_error and block.name == "search_regulations" and isinstance(data, dict):
-                        raw_search_results.append(data)
+                    if not is_error and isinstance(data, dict):
+                        if block.name == "search_regulations":
+                            raw_search_results.append(data)
+                        elif block.name == "assess_adverse_event" and data.get("basis"):
+                            raw_search_results.append(data["basis"])  # 트리아지 근거 규정도 출처로
                     tool_calls.append(
                         ToolCall(
                             name=block.name,
@@ -203,6 +214,20 @@ class RaAgent:
         resolved = _resolve_followup(message, history)
         async with Client(mcp) as mcp_client:
             intent = _route_intent(resolved)
+
+            if intent == "ae_triage":
+                # 구체적 케이스 서술 → PV 트리아지 도구(중대성 판정+기한 계산)
+                args = {"case_description": resolved}
+                with timed(trace, "tool.assess_adverse_event", "tool", {"args": args}):
+                    data = (await mcp_client.call_tool("assess_adverse_event", args)).data
+                tool_calls.append(ToolCall("assess_adverse_event", args, _summarize(data)))
+                return AgentResult(
+                    answer=_format_triage(data),
+                    mode="offline",
+                    tool_calls=tool_calls,
+                    citations=_collect_citations(tool_calls, [data.get("basis", {})]),
+                    grounded=True,
+                )
 
             if intent == "deadlines":
                 args = {"within_days": 30}
@@ -258,6 +283,18 @@ class RaAgent:
 _FOLLOWUP_MARKERS = ("그건", "그거", "그럼", "그게", "이건", "위", "방금", "아까", "그 경우", "그 때")
 
 
+def _redact_history(history: list[dict]) -> list[dict]:
+    """대화 이력의 문자열 콘텐츠에서 PII를 마스킹한다(외부 API로 나가기 전 방어)."""
+    out: list[dict] = []
+    for turn in history:
+        content = turn.get("content")
+        if isinstance(content, str):
+            out.append({**turn, "content": redact(content).text})
+        else:
+            out.append(turn)
+    return out
+
+
 def _last_user_text(history: list[dict]) -> str:
     """대화 이력에서 마지막 사용자 발화 텍스트를 추출(멀티턴 맥락 복원용)."""
     for turn in reversed(history):
@@ -306,8 +343,19 @@ def _grounding_coverage(query: str, results: list[dict]) -> float:
     return len(q_tokens & ctx_tokens) / len(q_tokens)
 
 
+_AE_CASE_MARKERS = ("환자", "복용 후", "투여 후", "복용했", "투여했", "접종 후")
+_AE_EVENT_MARKERS = (
+    "사망", "입원", "생명", "쇼크", "아나필락시스", "중환자실", "기형", "장애",
+    "부작용", "이상사례", "이상반응",
+)
+
+
 def _route_intent(message: str) -> str:
     m = message.lower()
+    # AE 트리아지: '구체적 케이스 서술'일 때만 (환자/복용 맥락 + 사건 어휘).
+    # "중대한 이상사례는 며칠 안에 보고?" 같은 '규정 질문'은 search 로 남긴다.
+    if any(k in m for k in _AE_CASE_MARKERS) and any(k in m for k in _AE_EVENT_MARKERS):
+        return "ae_triage"
     if any(k in m for k in ["마감", "기한", "일정", "언제까지", "d-day", "디데이", "며칠", "남은"]):
         # '보고 기한' 같은 규정 질문과 구분: 업무 일정 신호가 강할 때만
         if any(k in m for k in ["마감", "일정", "남은", "이번 주", "오늘", "디데이", "d-day"]):
@@ -345,6 +393,27 @@ def _format_checklist(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_triage(data: dict) -> str:
+    lines = ["📋 이상사례(AE) 트리아지 결과", ""]
+    if data.get("is_serious"):
+        lines.append(f"- 중대성 판정: **중대(Serious)** — 충족 기준: {', '.join(data.get('criteria_met', []))}")
+    else:
+        lines.append("- 중대성 판정: 비중대 (중대성 기준 미감지)")
+    lines.append(f"- 보고 경로: {data.get('route', '')}")
+    if data.get("deadline_date"):
+        lines.append(
+            f"- 보고 기한: {data['deadline_date']} (인지일 {data.get('awareness_date')} 기준"
+            + (", 지체 없이)" if data.get("deadline_days") == 0 else f", {data.get('deadline_days')}일 이내)")
+        )
+    lines.append(f"- 판정 사유: {data.get('rationale', '')}")
+    if data.get("pii_masked"):
+        masked = ", ".join(f"{m['type']} {m['count']}건" for m in data["pii_masked"])
+        lines.append(f"- 🔒 개인정보 마스킹: {masked}")
+    for c in data.get("caveats", []):
+        lines.append(f"- ⚠ {c}")
+    return "\n".join(lines)
+
+
 def _format_search_answer(query: str, data: dict) -> str:
     results = data.get("results", [])
     if not results:
@@ -367,6 +436,8 @@ def _format_search_answer(query: str, data: dict) -> str:
 
 def _summarize(data: Any) -> str:
     if isinstance(data, dict):
+        if "is_serious" in data:
+            return "중대 → " + data.get("route", "") if data["is_serious"] else "비중대 → PSUR"
         if "results" in data:
             return f"{len(data['results'])}건 검색"
         if "deadlines" in data:
