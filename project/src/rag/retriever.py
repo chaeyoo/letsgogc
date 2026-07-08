@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
 import math
 from collections import Counter
 
@@ -18,6 +19,24 @@ from .chunker import Chunk
 from .embedder import cosine
 from .textutil import tokenize
 from .vectorstore import InMemoryVectorStore, Scored
+
+
+def _is_active(chunk: Chunk, as_of: str, include_superseded: bool) -> bool:
+    """버전 인지 필터: 이 청크를 현재 검색 대상으로 삼을지 판정한다.
+
+    - 폐지(superseded)된 문서는 기본 제외(이력 조회 시 include_superseded=True로 포함).
+    - as_of(기준일)가 주어지면 그 시점에 아직 시행되지 않은 문서는 제외
+      ("2024년 시점 기준 유효 규정" 같은 과거 시점 질의 지원).
+    """
+    if not include_superseded and chunk.status == "superseded":
+        return False
+    if as_of and chunk.effective_date:
+        try:
+            if _dt.date.fromisoformat(chunk.effective_date) > _dt.date.fromisoformat(as_of):
+                return False
+        except ValueError:
+            pass
+    return True
 
 
 class BM25Index:
@@ -76,24 +95,53 @@ def _minmax(values: list[float]) -> list[float]:
 class HybridRetriever:
     """벡터 + BM25 하이브리드 1차 검색 후 리랭킹."""
 
-    def __init__(self, store: InMemoryVectorStore, alpha: float = 0.5) -> None:
+    def __init__(
+        self, store: InMemoryVectorStore, alpha: float = 0.5, rerank_weight: float = 0.9
+    ) -> None:
         self.store = store
         self.alpha = alpha              # 벡터 가중(1-alpha 는 BM25 가중)
+        self.rerank_weight = rerank_weight  # 리랭커 신호 vs 1차 점수 prior 결합 비율
         self.bm25 = BM25Index()
 
     def index(self, chunks: list[Chunk]) -> None:
         self.store.index(chunks)
         self.bm25.index([c.text for c in chunks])
 
-    # ---- 1단계: 하이브리드 검색 ----
-    def _hybrid(self, query: str, top_k: int) -> list[Scored]:
+    def _candidate_indices(self, as_of: str, include_superseded: bool) -> list[int]:
+        """버전 인지 필터를 통과한 청크 인덱스만 반환(세 검색 모드 공통 후보군)."""
+        return [
+            i
+            for i, c in enumerate(self.store.chunks)
+            if _is_active(c, as_of, include_superseded)
+        ]
+
+    # ---- 벡터 단독 검색(버전 필터 공유; eval 비교·폴백용) ----
+    def vector_search(
+        self, query: str, top_k: int, as_of: str = "", include_superseded: bool = False
+    ) -> list[Scored]:
         qv = self.store.embedder.embed(query)
-        vec_scores = [cosine(qv, v) for v in self.store.vectors]
-        bm_scores = self.bm25.scores(query)
+        idxs = self._candidate_indices(as_of, include_superseded)
+        scored = [
+            Scored(chunk=self.store.chunks[i], score=cosine(qv, self.store.vectors[i]))
+            for i in idxs
+        ]
+        scored.sort(key=lambda s: s.score, reverse=True)
+        return scored[:top_k]
+
+    # ---- 1단계: 하이브리드 검색 ----
+    def _hybrid(
+        self, query: str, top_k: int, as_of: str = "", include_superseded: bool = False
+    ) -> list[Scored]:
+        qv = self.store.embedder.embed(query)
+        bm_scores_all = self.bm25.scores(query)
+        idxs = self._candidate_indices(as_of, include_superseded)
+        # 정규화는 '후보군 안에서' 수행해야 스케일이 왜곡되지 않는다.
+        vec_scores = [cosine(qv, self.store.vectors[i]) for i in idxs]
+        bm_scores = [bm_scores_all[i] for i in idxs]
         vn, bn = _minmax(vec_scores), _minmax(bm_scores)
         combined = [
-            Scored(chunk=c, score=self.alpha * vn[i] + (1 - self.alpha) * bn[i])
-            for i, c in enumerate(self.store.chunks)
+            Scored(chunk=self.store.chunks[i], score=self.alpha * vn[j] + (1 - self.alpha) * bn[j])
+            for j, i in enumerate(idxs)
         ]
         combined.sort(key=lambda s: s.score, reverse=True)
         return combined[:top_k]
@@ -120,15 +168,31 @@ class HybridRetriever:
 
         return 0.6 * coverage + 0.25 * phrase + 0.15 * section_hit
 
-    def retrieve(self, query: str, top_k: int, rerank_n: int) -> list[Scored]:
-        """최종 검색: 하이브리드 top_k → 리랭킹 → 상위 rerank_n 반환."""
-        first = self._hybrid(query, top_k)
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        rerank_n: int,
+        as_of: str = "",
+        include_superseded: bool = False,
+    ) -> list[Scored]:
+        """최종 검색: 하이브리드 top_k → 리랭킹 → 상위 rerank_n 반환.
+
+        as_of / include_superseded 로 버전 인지 검색을 제어한다.
+        """
+        first = self._hybrid(query, top_k, as_of, include_superseded)
+        if not first:
+            return []
+        # 1차 하이브리드 점수를 prior 로 블렌딩(순수 재정렬은 쉬운 질의를 오히려 떨어뜨림).
+        # 실무 Cross-Encoder 리랭커도 first-stage 점수와 결합해 안정화하는 관행을 반영.
+        first_scores = _minmax([s.score for s in first])
         reranked = [
-            Scored(chunk=s.chunk, score=self._rerank_score(query, s.chunk))
-            for s in first
+            Scored(
+                chunk=s.chunk,
+                score=self.rerank_weight * self._rerank_score(query, s.chunk)
+                + (1 - self.rerank_weight) * first_scores[i],
+            )
+            for i, s in enumerate(first)
         ]
         reranked.sort(key=lambda s: s.score, reverse=True)
-        # 리랭킹 점수가 모두 0이면(질의어 미스) 하이브리드 순서를 폴백 유지
-        if reranked and reranked[0].score == 0.0:
-            return first[:rerank_n]
         return reranked[:rerank_n]

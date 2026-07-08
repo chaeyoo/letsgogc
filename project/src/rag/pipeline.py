@@ -42,6 +42,8 @@ class RetrievedContext:
                 "title": s.chunk.title,
                 "source": s.chunk.source,
                 "section": s.chunk.section,
+                "version": s.chunk.version,
+                "effective_date": s.chunk.effective_date,
                 "score": round(s.score, 4),
             }
             for i, s in enumerate(self.chunks, 1)
@@ -49,10 +51,13 @@ class RetrievedContext:
 
 
 class RagPipeline:
-    def __init__(self, reg_dir: Path | None = None) -> None:
+    def __init__(self, reg_dir: Path | None = None, embedder_kind: str | None = None) -> None:
         self.reg_dir = reg_dir or config.REG_DIR
-        store = InMemoryVectorStore(get_embedder("tfidf"))
-        self.retriever = HybridRetriever(store, alpha=config.HYBRID_ALPHA)
+        self.embedder_kind = embedder_kind or config.EMBEDDER_KIND
+        store = InMemoryVectorStore(get_embedder(self.embedder_kind))
+        self.retriever = HybridRetriever(
+            store, alpha=config.HYBRID_ALPHA, rerank_weight=config.RERANK_WEIGHT
+        )
         self.n_docs = 0
         self.n_chunks = 0
 
@@ -67,9 +72,20 @@ class RagPipeline:
         return self
 
     def retrieve(
-        self, query: str, top_k: int | None = None, rerank_n: int | None = None
+        self,
+        query: str,
+        top_k: int | None = None,
+        rerank_n: int | None = None,
+        as_of: str = "",
+        include_superseded: bool = False,
     ) -> RetrievedContext:
         top_k = top_k or config.RETRIEVE_TOP_K
         rerank_n = rerank_n or config.RERANK_TOP_N
-        results = self.retriever.retrieve(query, top_k=top_k, rerank_n=rerank_n)
+        results = self.retriever.retrieve(
+            query,
+            top_k=top_k,
+            rerank_n=rerank_n,
+            as_of=as_of,
+            include_superseded=include_superseded,
+        )
         return RetrievedContext(query=query, chunks=results)

@@ -48,6 +48,9 @@ class ChatResponse(BaseModel):
     mode: str
     tool_calls: list[dict]
     citations: list[dict]
+    grounded: bool = True
+    trace: list[dict] = Field(default_factory=list)
+    latency_ms: float = 0.0
 
 
 @app.get("/health")
@@ -81,6 +84,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
             for t in result.tool_calls
         ],
         citations=result.citations,
+        grounded=result.grounded,
+        trace=result.trace,
+        latency_ms=result.latency_ms,
     )
 
 

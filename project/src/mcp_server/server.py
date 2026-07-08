@@ -45,29 +45,47 @@ def _load_ra_tasks() -> dict:
 # Tools
 # ---------------------------------------------------------------------------
 @mcp.tool
-def search_regulations(query: str, top_n: int = 3) -> dict:
+def search_regulations(
+    query: str, top_n: int = 3, as_of: str = "", include_superseded: bool = False
+) -> dict:
     """제약 규제문서(품목허가·변경허가·GMP·라벨링·약물감시·임상)를 의미 기반으로 검색한다.
 
     허가 절차, 심사 기간, 보고 기한, 제출자료, GMP 요건 등 '규정이 어떻게 되어 있는지'를
     묻는 질문에 사용한다. 하이브리드 검색 + 리랭킹으로 가장 관련 높은 근거 문단을 반환하며,
-    각 결과에는 출처(문서명·섹션)가 포함되어 답변의 근거 추적이 가능하다.
+    각 결과에는 출처(문서명·섹션·버전·시행일)가 포함되어 답변의 근거 추적이 가능하다.
+
+    버전 인지: 폐지(superseded)된 구판은 기본 제외한다(현행 규정만 답하도록).
+    과거 시점의 규정을 조회하려면 as_of(YYYY-MM-DD)를, 폐지본 이력까지 보려면
+    include_superseded=True 를 사용한다.
 
     Args:
         query: 검색할 질문/키워드 (예: "중대한 이상사례 보고 기한").
         top_n: 반환할 근거 문단 수 (기본 3).
+        as_of: 기준일(YYYY-MM-DD). 지정 시 그 시점에 시행 중이던 규정만 검색.
+        include_superseded: True면 폐지된 구판도 포함(이력 조회용).
 
     Returns:
-        {"results": [{"text","title","source","section","score"}...]} 형태.
+        {"results": [{"text","title","source","section","version","effective_date","score"}...]} 형태.
     """
-    ctx = _get_pipeline().retrieve(query, rerank_n=max(1, min(top_n, 5)))
+    ctx = _get_pipeline().retrieve(
+        query,
+        rerank_n=max(1, min(top_n, 5)),
+        as_of=as_of,
+        include_superseded=include_superseded,
+    )
     return {
         "query": query,
+        "as_of": as_of or None,
         "results": [
             {
                 "text": s.chunk.text.strip(),
+                "doc_id": s.chunk.doc_id,
                 "title": s.chunk.title,
                 "source": s.chunk.source,
                 "section": s.chunk.section,
+                "version": s.chunk.version,
+                "effective_date": s.chunk.effective_date,
+                "status": s.chunk.status,
                 "score": round(s.score, 4),
             }
             for s in ctx.chunks
