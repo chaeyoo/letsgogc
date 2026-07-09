@@ -1,18 +1,28 @@
 """PV 워크플로 수치 평가 — 규칙 기반이라도 '측정 없이 신뢰 없음'.
 
 트리아지→인과성→코딩→최소보고요건 전 단계를 라벨 데이터셋(pv_dataset.json,
-20케이스)으로 평가한다. 검색(evaluate)·신뢰성(faithfulness)과 같은 철학:
+22케이스)으로 평가한다. 검색(evaluate)·신뢰성(faithfulness)과 같은 철학:
 PV 도구도 회귀가 수치로 잡혀야 사전·규칙을 안심하고 고칠 수 있다.
 
 라벨은 '도메인 정답'이지 코드 출력의 복사가 아니다. 사전이 못 잡는 롱테일
-구어(저혈당·울렁거림·난청)를 일부러 포함해 코딩 재현율이 정직하게 1.0 미만이
-되게 했다 — 이 갭이 'MedDRA 본체 교체 + LLM 후보 제시' 확장 지점의 크기다.
+구어(저혈당·울렁거림·난청)와 2계층(LLT 참조)조차 못 잡는 심층 롱테일
+(저릿저릿)을 일부러 포함해, 확정 재현율(1계층)과 후보 재현율(2계층)이 모두
+정직하게 1.0 미만이 되게 했다 — 각 갭이 사전 검수 큐와 MedDRA 본체 교체라는
+확장 지점의 크기다.
 
 측정 지표
   - SeriousnessAcc : 중대성(Serious) 판정 정확도 — 닫힌 목록 대조라 1.0이어야 정상
   - DeadlineAcc    : 보고기한 계산 정확도(일수 + 날짜 연산) — 컴플라이언스 그 자체
   - CausalityAcc   : WHO-UMC 제안 등급 일치율
-  - Coding P/R/F1  : PT 코딩 micro 정밀도/재현율/F1 (재현율<1 = 사전 롱테일의 크기)
+  - Coding P/R/F1  : 1계층 '확정' 코딩 micro 정밀도/재현율/F1
+                     (재현율<1 = 검수된 사전의 롱테일 크기 — 후보로 메워도 확정
+                     지표는 섞지 않는다: 확정과 후보는 집계 신뢰도가 다르다)
+  - CandidateRecall: 확정∪후보(2계층 LLT 제안)까지 합친 재현율 — '사람 확정
+                     큐에 올라오는가'를 측정. 확정 재현율과의 갭 = 검수 대기량
+  - CandidatePrecision: 제시된 후보 중 정답 비율 — 후보는 사람이 거르지만
+                     노이즈가 많으면 검수 비용이 커지므로 따로 감시한다
+  - AEDetectionRecall: 이상사례 존재를 어느 계층으로든(확정/후보/미코딩 감지)
+                     알아챈 비율 — 최소보고요건 ④ 판정의 상한
   - ReportableAcc  : 최소보고요건(ICH E2D 4요소) 판정 정확도
   - MissingCountAcc: 빠진 요소 개수까지 정확히 짚는가(라벨이 있는 문항만)
 
@@ -37,6 +47,8 @@ def evaluate() -> dict:
     serious_ok = deadline_ok = causality_ok = reportable_ok = 0
     missing_total = missing_ok = 0
     tp = fp = fn = 0
+    cand_tp = cand_fp = 0            # 2계층 후보 채점(확정과 분리 집계)
+    ae_cases = ae_detected = 0       # 이상사례 '존재 감지'(계층 무관)
     failures: list[str] = []
 
     for item in items:
@@ -72,9 +84,33 @@ def evaluate() -> dict:
         fp += len(got_pts - want_pts)
         fn += len(want_pts - got_pts)
         if want_pts - got_pts:
-            failures.append(f"{item['id']} 코딩 미검출(사전 롱테일): {sorted(want_pts - got_pts)}")
+            failures.append(f"{item['id']} 확정코딩 미검출(사전 롱테일): {sorted(want_pts - got_pts)}")
         if got_pts - want_pts:
-            failures.append(f"{item['id']} 코딩 오탐: {sorted(got_pts - want_pts)}")
+            failures.append(f"{item['id']} 확정코딩 오탐: {sorted(got_pts - want_pts)}")
+
+        # 2계층 후보: 확정이 놓친 정답을 사람 확정 큐에 올렸는가 + 후보 노이즈
+        got_cand = {t.pt for t in r.candidate_terms}
+        cand_tp += len(got_cand & (want_pts - got_pts))
+        cand_fp += len(got_cand - want_pts)
+        want_cand = set(exp.get("candidate_pts", []))
+        if got_cand != want_cand:
+            failures.append(
+                f"{item['id']} 후보 불일치: got={sorted(got_cand)} want={sorted(want_cand)}"
+            )
+        if want_pts - got_pts - got_cand:
+            failures.append(
+                f"{item['id']} 후보에도 없음(심층 롱테일 — 미코딩 감지"
+                f"{'됨' if r.uncoded_expressions else ' 안 됨'}): "
+                f"{sorted(want_pts - got_pts - got_cand)}"
+            )
+        if exp.get("uncoded_detected") and not r.uncoded_expressions:
+            failures.append(f"{item['id']} 미코딩 감지 실패(3계층)")
+
+        # 이상사례 '존재' 감지 — 계층 무관(확정/후보/미코딩 중 하나라도)
+        if want_pts:
+            ae_cases += 1
+            if got_pts or got_cand or r.uncoded_expressions:
+                ae_detected += 1
 
         if r.reportable == exp["reportable"]:
             reportable_ok += 1
@@ -102,6 +138,9 @@ def evaluate() -> dict:
         "CodingPrecision": round(precision, 3),
         "CodingRecall": round(recall, 3),
         "CodingF1": round(f1, 3),
+        "CandidateRecall": round((tp + cand_tp) / (tp + fn), 3) if tp + fn else 1.0,
+        "CandidatePrecision": round(cand_tp / (cand_tp + cand_fp), 3) if cand_tp + cand_fp else 1.0,
+        "AEDetectionRecall": round(ae_detected / ae_cases, 3) if ae_cases else 1.0,
         "ReportableAcc": round(reportable_ok / n, 3),
         "MissingCountAcc": round(missing_ok / missing_total, 3) if missing_total else None,
         "failures": failures,
@@ -117,9 +156,14 @@ def main() -> None:
     print(f"DeadlineAcc     (보고기한 일수+날짜 연산): {res['DeadlineAcc']:.3f}")
     print(f"CausalityAcc    (WHO-UMC 제안 등급)     : {res['CausalityAcc']:.3f}")
     print(
-        f"Coding P/R/F1   (PT 표준화 코딩)        : "
+        f"Coding P/R/F1   (1계층 확정 코딩)       : "
         f"{res['CodingPrecision']:.3f} / {res['CodingRecall']:.3f} / {res['CodingF1']:.3f}"
     )
+    print(
+        f"CandidateRecall (확정∪후보 — 검수 큐 도달): {res['CandidateRecall']:.3f}"
+        f"  (후보 정밀도 {res['CandidatePrecision']:.3f})"
+    )
+    print(f"AEDetectionRecall(존재 감지 — ④요건 상한): {res['AEDetectionRecall']:.3f}")
     print(f"ReportableAcc   (최소보고요건 4요소)    : {res['ReportableAcc']:.3f}")
     if res["MissingCountAcc"] is not None:
         print(f"MissingCountAcc (빠진 요소 개수 정확도) : {res['MissingCountAcc']:.3f}")
@@ -130,11 +174,13 @@ def main() -> None:
             print(f"  - {f}")
     print("-" * 62)
     print("해석: 중대성·기한은 규정의 닫힌 목록 대조 + 날짜 연산이라 1.0이 정상이며,")
-    print("      1.0이 깨지면 규칙 회귀다(CI가 잡는다). 코딩 재현율(<1.0)은 소사전")
-    print("      롱테일의 크기 — 실무에선 MedDRA 본체 교체 + 'LLM 후보 제시→사람 확정'")
-    print("      으로 메우는 확장 지점이다. 오탐(정밀도)은 1.0을 유지해야 한다 —")
-    print("      잘못 붙은 코드는 집계를 오염시키지만, 못 붙인 코드는 보완 요청으로")
-    print("      드러난다(시끄러운 실패가 올바른 실패 방향).")
+    print("      1.0이 깨지면 규칙 회귀다(CI가 잡는다). 확정 코딩 재현율(<1.0)은 검수된")
+    print("      사전의 롱테일 크기 — 2계층(LLT 참조 후보)이 이 갭을 '사람 확정 큐'로")
+    print("      올리고(CandidateRecall), 어느 사전에도 없는 심층 롱테일은 3계층이")
+    print("      '미코딩 감지'로 표시한다(AEDetectionRecall). 확정 정밀도는 무관용(1.0):")
+    print("      잘못 붙은 코드는 집계를 오염시키므로 후보를 확정에 섞지 않는다.")
+    print("      보고요건 ④는 '증상 서술의 존재'로 판정하므로 코딩 실패가 reportable")
+    print("      오판으로 연쇄되지 않는다(막연한 서술은 여전히 미충족 — specificity).")
 
 
 if __name__ == "__main__":

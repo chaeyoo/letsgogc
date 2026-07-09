@@ -98,3 +98,60 @@ def test_rerank_title_field_signal(pipeline):
     s_match = r._rerank_score(q, mk("의약품 표시기재 기준"))
     s_mismatch = r._rerank_score(q, mk("화장품 표시광고 규정"))
     assert s_match > s_mismatch
+
+
+# ---------------------------------------------------------------------------
+# 리랭커 v3 — 섹션 타입 prior (질의 의도 게이트)
+# ---------------------------------------------------------------------------
+def test_contrast_section_penalty_fixes_hard_negative(pipeline):
+    """'X와의 차이(주의)' 대조 섹션은 X 도메인 어휘를 통째로 인용해 어휘 신호가
+    정답 문서를 이긴다(잔여 하드네거티브 실패의 형태). 질의가 비교를 묻지
+    않으면 대조 섹션을 감점해 정답(REG-004 본문 조항)이 1순위여야 한다."""
+    top = pipeline.retriever.retrieve(
+        "의약품 용기에 반드시 기재해야 하는 사항은?", top_k=8, rerank_n=1
+    )[0]
+    assert top.chunk.doc_id == "REG-004"
+    assert "차이" not in top.chunk.section
+
+
+def test_contrast_penalty_gated_off_for_comparison_query(pipeline):
+    """질의 의도 게이트: 사용자가 '차이'를 물으면 대조 섹션이 곧 정답이므로
+    페널티를 끈다 — 페널티가 '섹션 삭제'가 아니라 '의도 조건부 신호'라는 증거."""
+    top = pipeline.retriever.retrieve(
+        "화장품 표시기재는 의약품 표시기재와 뭐가 다른가요?", top_k=8, rerank_n=1
+    )[0]
+    assert top.chunk.doc_id == "REG-008"
+    assert "차이" in top.chunk.section
+
+
+def test_preamble_demotion_prefers_operative_section(pipeline):
+    """서두(목적/개요) 섹션은 문서 주제 어휘를 요약해 담아 운영 질문에서
+    본문 조항을 이기는 과대평가가 난다 — 감쇠 후 본문 조항이 1순위."""
+    top = pipeline.retriever.retrieve(
+        "제품 설명서에 경고 문구는 어디에 표시하나요?", top_k=8, rerank_n=1
+    )[0]
+    assert top.chunk.doc_id == "REG-004"
+    assert "첨부문서" in top.chunk.section
+
+
+def test_preamble_demotion_gated_off_for_definition_query(pipeline):
+    """정의/취지 질문('~란 무엇')은 서두가 곧 정답 — 게이트가 감쇠를 꺼서
+    개요 섹션이 그대로 1순위여야 한다."""
+    top = pipeline.retriever.retrieve(
+        "시판 후 안전관리란 무엇을 하는 활동인가요?", top_k=8, rerank_n=1
+    )[0]
+    assert top.chunk.doc_id == "REG-005"
+    assert "개요" in top.chunk.section
+
+
+def test_section_priors_disabled_reproduces_old_failure(pipeline):
+    """ablation 가드: prior 를 끄면(0.0) 대조 섹션이 다시 이긴다 — 개선이
+    이 신호에서 왔음을 테스트로 고정(우연한 다른 변경으로 통과하는 것 방지)."""
+    r = pipeline.retriever
+    saved = (r.contrast_penalty, r.preamble_penalty)
+    try:
+        r.contrast_penalty = r.preamble_penalty = 0.0
+        top = r.retrieve("의약품 용기에 반드시 기재해야 하는 사항은?", top_k=8, rerank_n=1)[0]
+        assert top.chunk.doc_id == "REG-008" and "차이" in top.chunk.section
+    finally:
+        r.contrast_penalty, r.preamble_penalty = saved

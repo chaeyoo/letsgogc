@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import re
 from collections import Counter
 
 from .chunker import Chunk
@@ -83,6 +84,31 @@ class BM25Index:
         return out
 
 
+# ---- 섹션 타입 감지 (리랭커 v3: 질의 의도로 게이트되는 구조 prior) ----
+# 규제문서에는 "X와의 차이/구분(주의)" 같은 '대조 섹션'이 반복적으로 등장한다
+# (이 코퍼스에만 5곳: 화장품↔의약품 표시기재, DMF↔완제, 실태조사↔데이터완전성,
+# 희귀↔일반허가, 의약외품↔의약품). 대조 섹션은 다른 도메인의 어휘를 통째로
+# 인용하므로 어휘 기반 신호(coverage)로는 'X를 다루는 문서'와 구분이 불가능
+# — 섹션 '제목'의 대조 구문("~와의/과의 + 차이/구분/관계/비교")이 유일하게
+# 남는 구조 신호다. 질의 자체가 비교를 물으면(gate) 페널티를 끈다.
+_CONTRAST_SECTION_RE = re.compile(r"[와과]의\s*.{0,8}?(차이|구분|관계|비교)")
+_CONTRAST_QUERY_MARKERS = ("차이", "다르", "다른", "비교", "구분", "관계", "vs")
+
+# '목적/개요/총칙' 서두 섹션은 문서의 모든 주제 어휘를 요약적으로 담고 있어
+# coverage 신호가 과대평가되기 쉽다(운영 질문의 답은 대개 본문 조항에 있다).
+# 질의가 정의/취지를 물을 때는(gate) 서두가 곧 정답이므로 감쇠를 끈다.
+_PREAMBLE_SECTION_RE = re.compile(r"(목적|개요|총칙)")
+_PREAMBLE_QUERY_MARKERS = ("무엇", "뭐", "목적", "개요", "취지", "정의", "어떤 활동", "어떤 문서")
+
+
+def _is_contrast_section(section: str) -> bool:
+    return bool(_CONTRAST_SECTION_RE.search(section))
+
+
+def _is_preamble_section(section: str) -> bool:
+    return bool(_PREAMBLE_SECTION_RE.search(section))
+
+
 def _minmax(values: list[float]) -> list[float]:
     """0~1 정규화 (하이브리드 결합 전 스케일 정렬)."""
     if not values:
@@ -102,11 +128,16 @@ class HybridRetriever:
         alpha: float = 0.5,
         rerank_weight: float = 0.9,
         idf_power: float = 0.5,
+        contrast_penalty: float = 0.3,
+        preamble_penalty: float = 0.055,
     ) -> None:
         self.store = store
         self.alpha = alpha              # 벡터 가중(1-alpha 는 BM25 가중)
         self.rerank_weight = rerank_weight  # 리랭커 신호 vs 1차 점수 prior 결합 비율
         self.idf_power = idf_power      # 리랭커 토큰 가중 = idf^p (0=균등, 1=IDF 그대로)
+        # 섹션 타입 prior (질의 의도 게이트, 0이면 비활성 — sweep ablation 용)
+        self.contrast_penalty = contrast_penalty
+        self.preamble_penalty = preamble_penalty
         self.bm25 = BM25Index()
         # 리랭커용 사전 계산 캐시 (질의마다 청크를 재토크나이징하면 지연이 4배로 는다)
         self._chunk_tf: list[Counter[str]] = []
@@ -124,6 +155,8 @@ class HybridRetriever:
         # 섹션 신호는 '섹션 제목만' 쓴다 — 문서 제목은 title 신호가 따로 담당
         # (섞으면 같은 문서의 모든 청크가 제목 토큰을 공유해 섹션 간 변별이 죽는다)
         self._sec_tokens = [set(tokenize(c.section)) for c in chunks]
+        self._sec_contrast = [_is_contrast_section(c.section) for c in chunks]
+        self._sec_preamble = [_is_preamble_section(c.section) for c in chunks]
         self._title_w = [
             {t: self._token_weight(t) for t in set(tokenize(c.title))} for c in chunks
         ]
@@ -171,9 +204,10 @@ class HybridRetriever:
 
     # ---- 2단계: 리랭킹 ----
     # 리랭커 컴포넌트 가중치. eval 스윕에서 이 데이터셋 지표는 title 0~0.15,
-    # idf_power 0~1에 둔감했다(하드네거티브 실패 1건은 어떤 조합으로도 안 뒤집힘).
-    # 그래서 '수치가 좋아서'가 아니라 신호의 역할 분리(본문/구문/섹션/제목)를
-    # 기준으로 가중을 고정했다 — 코퍼스가 커져 신호가 분화되면 sweep 으로 재보정.
+    # idf_power 0~1에 둔감했다 — 잔여 하드네거티브(대조 섹션) 실패는 이 4신호의
+    # 어떤 재가중으로도 안 뒤집혔고, 결국 '신호 추가'(섹션 타입 prior, v3)로
+    # 풀렸다. 그래서 가중은 '수치가 좋아서'가 아니라 신호의 역할 분리
+    # (본문/구문/섹션/제목) 기준으로 고정 — 코퍼스가 커지면 sweep 으로 재보정.
     RERANK_COMPONENT_WEIGHTS: dict[str, float] = {
         "coverage": 0.55,   # 본문: 질의 토큰 커버리지(idf^p 가중)
         "phrase": 0.20,     # 구문: 질의 원문 정확 매칭
@@ -214,7 +248,7 @@ class HybridRetriever:
         절반 가중으로만 반영한다. 완전 어휘 불일치 질의("부작용이 심각…"은
         원 질의 토큰이 규정 문서에 하나도 없다)에서 리랭커가 판별력을 잃는
         것을 막는 안전망 — rerank_weight=1.0(1차 prior 없음) ablation 에서
-        aux 유무가 Hit@1 0.967 vs 0.867 차이를 만든다.
+        aux 유무가 Hit@1 0.969 vs 0.906 차이를 만든다(32문항).
         """
         q_terms = tokenize(query)
         if not q_terms:
@@ -227,11 +261,15 @@ class HybridRetriever:
             sec_terms = set(tokenize(chunk.section))
             title_w = {t: self._token_weight(t) for t in set(tokenize(chunk.title))}
             title_total = sum(title_w.values())
+            is_contrast = _is_contrast_section(chunk.section)
+            is_preamble = _is_preamble_section(chunk.section)
         else:
             c_set = set(self._chunk_tf[ix])
             sec_terms = self._sec_tokens[ix]
             title_w = self._title_w[ix]
             title_total = self._title_total[ix]
+            is_contrast = self._sec_contrast[ix]
+            is_preamble = self._sec_preamble[ix]
 
         # 토큰 가중치: 원 질의는 idf^p, 확장 토큰은 그 절반(보조 신호)
         weights = {t: self._token_weight(t) for t in q_set}
@@ -250,12 +288,30 @@ class HybridRetriever:
         )
 
         w = self.RERANK_COMPONENT_WEIGHTS
-        return (
+        score = (
             w["coverage"] * coverage
             + w["phrase"] * phrase
             + w["section"] * section_hit
             + w["title"] * title_match
         )
+
+        # 섹션 타입 prior (v3): 질의 의도로 게이트되는 구조 신호.
+        #  - 대조 섹션("X와의 차이/구분")은 X 도메인 어휘를 통째로 인용해
+        #    coverage 가 정답 문서를 이긴다(하드네거티브의 최빈 실패 형태).
+        #    질의가 비교를 묻지 않으면 강하게 감점한다. 크기 0.3은 스윕에서
+        #    '뒤집히는 최소값(≈0.24) 이상 & 게이트 문항 불변' 플랫 구간의 값.
+        #  - 서두 섹션(목적/개요/총칙)은 문서 주제 어휘를 요약해 담고 있어
+        #    운영 질문("어디에 표시?")에서 본문 조항을 이기는 과대평가가 난다.
+        #    감쇠 0.055는 유효 밴드(0.04~0.07: 아래는 미교정, 위는 정답 서두
+        #    문항 역전)의 중앙 — 근거는 eval/sweep.py 로 재현.
+        low_q = query.lower()
+        if is_contrast and self.contrast_penalty > 0:
+            if not any(m in low_q for m in _CONTRAST_QUERY_MARKERS):
+                score -= self.contrast_penalty
+        if is_preamble and self.preamble_penalty > 0:
+            if not any(m in low_q for m in _PREAMBLE_QUERY_MARKERS):
+                score -= self.preamble_penalty
+        return score
 
     def retrieve(
         self,
@@ -275,7 +331,7 @@ class HybridRetriever:
         같은 어휘 불일치를 메워 recall 확보), 2단계 리랭킹은 원 질의 토큰을
         기준으로 재점수하되 확장 토큰을 절반 가중의 보조 신호로만 쓴다.
         원 질의만으로 재점수하면 완전 어휘 불일치 질의에서 리랭커가 판별력을
-        잃는다(rerank_weight=1.0 ablation: aux 유무 = Hit@1 0.967 vs 0.867).
+        잃는다(rerank_weight=1.0 ablation: aux 유무 = Hit@1 0.969 vs 0.906).
         """
         q1 = expand_query(query) if expand else query
         first = self._hybrid(q1, top_k, as_of, include_superseded)

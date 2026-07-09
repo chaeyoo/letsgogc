@@ -22,7 +22,13 @@ import re
 from dataclasses import dataclass, field
 
 from .causality import CausalityResult, assess_causality
-from .coding import CodedTerm, code_terms
+from .coding import (
+    CandidateTerm,
+    CodedTerm,
+    code_terms,
+    flag_uncoded_expressions,
+    suggest_candidates,
+)
 from .triage import TriageResult, assess_case
 
 # 최소보고요건 감지 신호 (마스킹된 텍스트에서도 남는 '존재 신호' 위주)
@@ -43,7 +49,9 @@ class ReportDraft:
     missing: list[str]                   # 빠진 요소(보완 안내)
     triage: TriageResult
     causality: CausalityResult
-    coded_terms: list[CodedTerm]
+    coded_terms: list[CodedTerm]         # 1계층: 확정 코딩(집계 대상)
+    candidate_terms: list[CandidateTerm] = field(default_factory=list)  # 2계층: 사람 확정 대기
+    uncoded_expressions: list[str] = field(default_factory=list)        # 3계층: 감지만(PT 없음)
     draft_markdown: str = ""
     followups: list[str] = field(default_factory=list)   # 보고자에게 되물을 질문
 
@@ -51,6 +59,7 @@ class ReportDraft:
 def _check_minimum_criteria(
     case_text: str, suspected_drug: str, reporter: str, patient_info: str,
     coded: list[CodedTerm], triage: TriageResult,
+    candidates: list[CandidateTerm], uncoded: list[str],
 ) -> tuple[list[str], dict[str, str]]:
     """ICH E2D 최소보고요건 4요소를 점검한다. (빠진 요소 목록, 채워진 값) 반환."""
     fields: dict[str, str] = {}
@@ -78,8 +87,19 @@ def _check_minimum_criteria(
     else:
         missing.append("③ 의심 의약품 (제품명 또는 성분명)")
 
+    # ④요소의 본질은 '구체적 이상사례 서술이 존재하는가'이지 '코딩에 성공했는가'가
+    # 아니다(ICH E2D). 확정 코딩이 없어도 후보(2계층)·미코딩 감지(3계층)가 있으면
+    # 요건은 충족으로 보고, 코딩 확정은 follow-up 으로 넘긴다 — 코딩 사전의 빈틈이
+    # '보고 불가' 오판으로 연쇄되는 것을 여기서 끊는다. 막연한 서술("몸이 좋지
+    # 않다")은 세 계층 모두 잡지 않으므로 여전히 미충족(specificity 요구).
     if coded or triage.criteria_met:
         fields["이상사례"] = ", ".join(t.pt for t in coded) if coded else "서술에서 확인(코딩 필요)"
+    elif candidates:
+        fields["이상사례"] = (
+            "후보 감지(확정 필요): " + ", ".join(f"{c.pt}({c.pt_en})?" for c in candidates)
+        )
+    elif uncoded:
+        fields["이상사례"] = f"증상 서술 감지(미코딩): {', '.join(uncoded)} — PT 부여 필요"
     else:
         missing.append("④ 이상사례 (구체적 증상/사건)")
 
@@ -89,6 +109,7 @@ def _check_minimum_criteria(
 def _render_markdown(
     case_text: str, fields: dict[str, str], missing: list[str],
     triage: TriageResult, causality: CausalityResult, coded: list[CodedTerm],
+    candidates: list[CandidateTerm], uncoded: list[str],
 ) -> str:
     """KAERS 개별사례안전성보고(ICSR) 항목 구조를 따르는 사람이 읽는 초안."""
     lines = ["# 이상사례 개별사례보고(ICSR) 초안 — KAERS 제출용", ""]
@@ -100,12 +121,18 @@ def _render_markdown(
         lines.append(f"- {name}: {fields.get(name, '**(미확인 — 보완 필요)**')}")
     lines.append("")
 
-    if coded:
+    if coded or candidates or uncoded:
         lines.append("## 2. 이상사례 표준 용어 코딩 (MedDRA 방식)")
-        lines.append("| 서술 표현 | PT(표준 용어) | SOC(기관계) |")
-        lines.append("|---|---|---|")
+        lines.append("| 서술 표현 | PT(표준 용어) | SOC(기관계) | 상태 |")
+        lines.append("|---|---|---|---|")
         for t in coded:
-            lines.append(f"| {t.verbatim} | {t.pt} ({t.pt_en}) | {t.soc} |")
+            lines.append(f"| {t.verbatim} | {t.pt} ({t.pt_en}) | {t.soc} | 확정 |")
+        for c in candidates:
+            lines.append(
+                f"| {c.verbatim} | {c.pt} ({c.pt_en}) | {c.soc} | ⚠ 후보(승인/기각 필요) |"
+            )
+        for u in uncoded:
+            lines.append(f"| {u} | (미코딩 — PT 부여 필요) | - | ⚠ 감지만 |")
         lines.append("")
 
     lines.append("## 3. 중대성 및 보고 기한 (규칙 기반 판정)")
@@ -149,21 +176,34 @@ def build_report(
     triage = assess_case(case_text, awareness_date)
     causality = assess_causality(case_text)
     coded = code_terms(case_text)
+    candidates = suggest_candidates(case_text, coded)
+    uncoded = flag_uncoded_expressions(case_text, coded, candidates)
     missing, fields = _check_minimum_criteria(
-        case_text, suspected_drug, reporter, patient_info, coded, triage
+        case_text, suspected_drug, reporter, patient_info, coded, triage,
+        candidates, uncoded,
     )
 
-    # follow-up: 최소요건 누락 + 인과성 판단에 부족한 정보를 하나의 질문 목록으로
+    # follow-up: 최소요건 누락 + 코딩 확정 대기 + 인과성 부족 정보를 한 목록으로
     followups = [f"최소보고요건 보완: {m}" for m in missing]
+    followups += [
+        f"코딩 확정: '{c.verbatim}' → {c.pt}({c.pt_en}) 후보 승인/기각 "
+        "(LLT 참조 매칭 — 자동 확정 금지)"
+        for c in candidates
+    ]
+    followups += [f"용어 코딩: 미코딩 증상 표현 '{u}' 에 PT 부여 필요" for u in uncoded]
     followups += [f"인과성 평가 보완: {q}" for q in causality.missing_info]
 
-    draft = _render_markdown(case_text, fields, missing, triage, causality, coded)
+    draft = _render_markdown(
+        case_text, fields, missing, triage, causality, coded, candidates, uncoded
+    )
     return ReportDraft(
         reportable=not missing,
         missing=missing,
         triage=triage,
         causality=causality,
         coded_terms=coded,
+        candidate_terms=candidates,
+        uncoded_expressions=uncoded,
         draft_markdown=draft,
         followups=followups,
     )
