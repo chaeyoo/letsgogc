@@ -31,3 +31,6 @@ jobs:
 
       - name: 답변 신뢰성(faithfulness) 평가
         run: python -m eval.faithfulness
+
+      - name: PV 워크플로 평가 (트리아지·인과성·코딩·보고요건)
+        run: python -m eval.pv_eval

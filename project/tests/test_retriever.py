@@ -49,3 +49,52 @@ def test_rerank_fixes_hard_negative(pipeline):
     q = "GMP 데이터 완전성 ALCOA 원칙은 무엇인가요?"
     top = pipeline.retriever.retrieve(q, top_k=8, rerank_n=1)[0]
     assert top.chunk.doc_id == "REG-003"
+
+
+def test_colloquial_query_resolved_by_expansion(pipeline):
+    """구어 질의('부작용이 심각', '섞이는 것')는 원 질의 토큰이 문서에 거의
+    없어도, 동의어 확장(심각→중대한, 섞이→교차오염)으로 정답 문서를 찾아야
+    한다 — eval 오류 분석에서 사전을 보강한 회귀 가드."""
+    top = pipeline.retriever.retrieve(
+        "부작용이 심각하게 나타났을 때 당국에 얼마나 빨리 알려야 하나요?",
+        top_k=8, rerank_n=1,
+    )[0]
+    assert top.chunk.doc_id == "REG-005"
+
+    top = pipeline.retriever.retrieve(
+        "약을 만드는 시설에서 서로 다른 제품이 섞이는 것을 막는 기본 원칙은?",
+        top_k=8, rerank_n=1,
+    )[0]
+    assert top.chunk.doc_id == "REG-003"
+
+
+def test_aux_terms_keep_reranker_robust_without_prior(pipeline):
+    """확장 토큰 보조신호(aux)의 존재 이유: 1차 prior 를 끄면(rerank_weight=1.0)
+    완전 어휘 불일치 질의에서 aux 없는 리랭커는 판별력을 잃는다."""
+    r = pipeline.retriever
+    q = "부작용이 심각하게 나타났을 때 당국에 얼마나 빨리 알려야 하나요?"
+    saved = r.rerank_weight
+    try:
+        r.rerank_weight = 1.0
+        with_aux = r.retrieve(q, top_k=8, rerank_n=1, aux_in_rerank=True)[0]
+        assert with_aux.chunk.doc_id == "REG-005", "aux 켜면 prior 없이도 정답"
+    finally:
+        r.rerank_weight = saved
+
+
+def test_rerank_title_field_signal(pipeline):
+    """제목 정합(title) 신호: 같은 본문 매칭이라도 문서 제목이 질의와 겹치는
+    청크가 더 높은 점수를 받아야 한다(BM25F 감각의 필드 분리)."""
+    from src.rag.chunker import Chunk
+
+    def mk(title: str) -> Chunk:
+        return Chunk(
+            chunk_id="T-1", doc_id="T", source="t.md", title=title,
+            section="1. 개요", text="의약품 용기 기재사항에 대한 내용",
+        )
+
+    r = pipeline.retriever
+    q = "의약품 용기 기재사항은?"
+    s_match = r._rerank_score(q, mk("의약품 표시기재 기준"))
+    s_mismatch = r._rerank_score(q, mk("화장품 표시광고 규정"))
+    assert s_match > s_mismatch

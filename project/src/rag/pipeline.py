@@ -56,7 +56,10 @@ class RagPipeline:
         self.embedder_kind = embedder_kind or config.EMBEDDER_KIND
         store = InMemoryVectorStore(get_embedder(self.embedder_kind))
         self.retriever = HybridRetriever(
-            store, alpha=config.HYBRID_ALPHA, rerank_weight=config.RERANK_WEIGHT
+            store,
+            alpha=config.HYBRID_ALPHA,
+            rerank_weight=config.RERANK_WEIGHT,
+            idf_power=config.RERANK_IDF_POWER,
         )
         self.n_docs = 0
         self.n_chunks = 0
