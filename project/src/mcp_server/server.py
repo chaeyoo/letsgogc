@@ -161,11 +161,13 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
         {"case", "is_serious", "criteria_met", "expectedness", "route",
          "awareness_date", "deadline_date", "rationale", "caveats",
          "causality": {"suggested","rationale","signals","missing_info"},
-         "coded_terms": [{"verbatim","pt","pt_en","soc"}...],
+         "coded_terms": [{"verbatim","pt","pt_en","soc"}...] (확정 코딩),
+         "candidate_terms": [...] (LLT 참조 매칭 후보 — 사람 승인/기각 필요),
+         "uncoded_expressions": [...] (감지만 된 미코딩 증상 표현),
          "basis": {"results": [...]}}  — basis 는 판정 근거 규정 문단(출처 포함).
     """
     from ..pv.causality import assess_causality
-    from ..pv.coding import code_terms
+    from ..pv.coding import code_terms, flag_uncoded_expressions, suggest_candidates
     from ..pv.redactor import redact
     from ..pv.triage import assess_case
 
@@ -173,6 +175,8 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
     t = assess_case(masked.text, awareness_date)
     c = assess_causality(masked.text)
     coded = code_terms(masked.text)
+    candidates = suggest_candidates(masked.text, coded)
+    uncoded = flag_uncoded_expressions(masked.text, coded, candidates)
     # 판정 근거 규정 문단을 RAG로 회수해 부착(추적성) — 보고기한의 출처는 REG-005
     basis = search_regulations("중대한 이상사례 보고 기한 신속보고", top_n=2)
     return {
@@ -194,6 +198,8 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
             "missing_info": c.missing_info,
         },
         "coded_terms": [ct.as_dict() for ct in coded],
+        "candidate_terms": [ct.as_dict() for ct in candidates],
+        "uncoded_expressions": uncoded,
         "basis": basis,
     }
 
@@ -217,7 +223,9 @@ def draft_ae_report(
          — 미충족이면 reportable=False 와 보완 항목을 반환한다.
       2) 중대성 판정 + 보고기한 계산 (assess_adverse_event 와 동일 규칙)
       3) 인과성(WHO-UMC) 등급 제안 + 부족 정보 follow-up 질문 생성
-      4) 이상사례 표준 용어 코딩(MedDRA 방식 PT/SOC)
+      4) 이상사례 표준 용어 코딩(MedDRA 방식 PT/SOC) — 확정/후보/미코딩 3계층
+         (사전 미수록 표현은 LLT 참조 후보 또는 '미코딩 감지'로 표시하고
+         사람 확정을 follow-up 으로 요청)
       5) 위를 종합한 마크다운 초안(draft_markdown) 조립
     입력 속 개인정보는 초안 생성 전에 마스킹된다(초안에는 비식별 서술만 남음).
 
@@ -231,6 +239,7 @@ def draft_ae_report(
     Returns:
         {"reportable", "missing", "followups", "draft_markdown",
          "is_serious", "deadline_date", "causality", "coded_terms",
+         "candidate_terms", "uncoded_expressions",
          "pii_masked", "basis": {"results": [...]}}.
     """
     from ..pv.redactor import redact
@@ -258,6 +267,8 @@ def draft_ae_report(
             "missing_info": r.causality.missing_info,
         },
         "coded_terms": [ct.as_dict() for ct in r.coded_terms],
+        "candidate_terms": [ct.as_dict() for ct in r.candidate_terms],
+        "uncoded_expressions": r.uncoded_expressions,
         "pii_masked": masked.summary(),
         "basis": basis,
     }

@@ -163,3 +163,80 @@ async def test_agent_report_end_to_end():
     assert r.grounded and any(c["doc_id"] == "REG-005" for c in r.citations)
     # 입구 마스킹: 초안·트레이스 어디에도 원 PII가 없다
     assert "박영희" not in r.answer and "1111" not in str(r.trace)
+
+
+# ---------------------------------------------------------------------------
+# 코딩 2·3계층 — 후보(LLT 참조) 제시와 미코딩 감지, 보고요건 연쇄 차단
+# ---------------------------------------------------------------------------
+def test_candidate_tier_suggests_but_never_confirms():
+    """1계층 미수록 표현('청력 상실')은 후보로만 제시된다 — 확정 목록에
+    섞이면 시그널 집계가 오염되므로 타입/필드 수준에서 분리를 보증한다."""
+    from src.pv.coding import suggest_candidates
+
+    case = "환자가 항결핵제O정을 복용 후 청력 상실이 발생했습니다."
+    coded = code_terms(case)
+    cands = suggest_candidates(case, coded)
+    assert all(t.pt != "난청" for t in coded), "후보가 확정에 섞이면 안 된다"
+    assert [c.pt for c in cands] == ["난청"]
+    assert cands[0].needs_confirmation
+
+
+def test_candidate_tier_skips_already_confirmed_pt():
+    """확정 사전이 이미 잡은 PT는 후보로 중복 제시하지 않는다(이중 집계 방지)."""
+    from src.pv.coding import suggest_candidates
+
+    case = "복용 후 오심과 함께 속이 울렁거린다고 합니다."  # 오심은 1계층 수록
+    coded = code_terms(case)
+    assert any(t.pt == "오심" for t in coded)
+    assert suggest_candidates(case, coded) == []
+
+
+def test_uncoded_flag_detects_specific_symptom_only():
+    """3계층은 '구체적 증상 서술'만 감지한다 — 막연한 서술("몸이 좋지 않다")은
+    ICH E2D의 specificity 요구상 ④요건 미충족이 올바른 판정이라 잡지 않는다."""
+    from src.pv.coding import flag_uncoded_expressions
+
+    hit = flag_uncoded_expressions("복용 후 손발이 저릿저릿하다고 호소", [], [])
+    assert hit and "저릿" in hit[0]
+    assert flag_uncoded_expressions("지인이 약을 먹고 몸이 좋지 않다고 합니다", [], []) == []
+
+
+def test_report_candidate_satisfies_event_criterion():
+    """④요건의 본질은 '구체적 이상사례 서술의 존재'다 — 1계층 코딩이 실패해도
+    후보(2계층)가 있으면 reportable 이고, 확정은 follow-up 으로 요청된다."""
+    r = build_report(
+        "환자가 위장약M정을 복용 후 속이 울렁거리고 힘들다고 호소했습니다. 약사가 보고했습니다."
+    )
+    assert r.coded_terms == [] and [c.pt for c in r.candidate_terms] == ["오심"]
+    assert r.reportable, r.missing
+    assert any("후보 승인/기각" in f for f in r.followups)
+    assert "후보(승인/기각 필요)" in r.draft_markdown
+
+
+def test_report_uncoded_signal_satisfies_event_criterion():
+    """어느 사전에도 없는 심층 롱테일도 '증상 서술 감지'로 ④요건은 충족 —
+    코딩 실패가 '보고 불가' 오판으로 연쇄되지 않는다(PT 부여는 사람 몫)."""
+    r = build_report(
+        "환자가 진통제R정을 복용 후 손발이 저릿저릿하다고 호소했습니다. 의사가 보고했습니다."
+    )
+    assert r.coded_terms == [] and r.candidate_terms == []
+    assert r.uncoded_expressions and r.reportable
+    assert any("PT 부여 필요" in f for f in r.followups)
+
+
+def test_report_vague_case_still_fails_event_criterion():
+    """보수성 유지 가드: 막연한 서술만 있는 케이스는 여전히 ④요건 미충족 —
+    후보/감지 계층이 '아무거나 통과'로 변질되지 않았음을 고정한다."""
+    r = build_report("지인이 약을 먹고 몸이 좋지 않다고 합니다.")
+    assert not r.reportable
+    assert any("④" in m for m in r.missing)
+
+
+def test_tool_exposes_candidate_and_uncoded_layers():
+    """MCP 도구 계약: 확정/후보/미코딩 3계층이 응답 스키마로 구분 노출된다."""
+    out = draft_ae_report(
+        "환자가 당뇨약C정을 복용 후 심한 저혈당으로 입원했습니다. 약사가 보고했습니다."
+    )
+    assert out["coded_terms"] == []
+    assert [c["pt"] for c in out["candidate_terms"]] == ["저혈당"]
+    assert all(c["needs_confirmation"] for c in out["candidate_terms"])

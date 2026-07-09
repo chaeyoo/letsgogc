@@ -60,6 +60,8 @@ class RagPipeline:
             alpha=config.HYBRID_ALPHA,
             rerank_weight=config.RERANK_WEIGHT,
             idf_power=config.RERANK_IDF_POWER,
+            contrast_penalty=config.RERANK_CONTRAST_PENALTY,
+            preamble_penalty=config.RERANK_PREAMBLE_PENALTY,
         )
         self.n_docs = 0
         self.n_chunks = 0
