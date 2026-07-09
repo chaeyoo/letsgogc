@@ -1,0 +1,79 @@
+"""개인정보 비식별화 (PII Redaction) — 외부 API 경계의 안전장치.
+
+PV 케이스 서술에는 환자 개인정보(주민번호·연락처·이름 등)가 섞여 들어온다.
+이 텍스트가 그대로 외부 LLM API·로그로 나가면 개인정보보호법/GDPR 위반이자
+제약사 보안 정책 위반이다. 그래서 에이전트 입구에서 먼저 마스킹한다.
+
+설계 원칙:
+  - 규칙(정규식) 기반: 결정론적이라 '무엇이 마스킹되는가'를 감사할 수 있고,
+    LLM 호출 '이전'에 실행되므로 마스킹 자체를 LLM에 의존하는 순환이 없다.
+  - 원문 비보존: 마스킹 결과에는 유형·건수만 남기고 원 값은 어디에도 저장하지 않는다.
+  - 규제문서 검색에 PII 토큰은 노이즈일 뿐이므로, 마스킹이 답변 품질을 해치지 않는다.
+  - 한계: 정규식은 자유 서술 속 이름 전부를 못 잡는다. 실무 확장 지점은
+    NER 기반 비식별화(예: Presidio)이며, 이 모듈이 그 교체 자리다.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+# (유형, 패턴, 대체 라벨) — 한국 제약 현장에서 흔한 식별자 위주
+_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
+    (
+        "주민등록번호",
+        re.compile(r"\b\d{6}\s*[-–]\s*[1-4]\d{6}\b"),
+        "[주민번호]",
+    ),
+    (
+        "전화번호",
+        re.compile(r"\b01[016789][-\s]?\d{3,4}[-\s]?\d{4}\b|\b0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}\b"),
+        "[전화번호]",
+    ),
+    (
+        "이메일",
+        re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b"),
+        "[이메일]",
+    ),
+    (
+        "환자/차트번호",
+        re.compile(r"(환자번호|차트번호|등록번호)\s*[:#]?\s*[A-Za-z0-9-]+"),
+        r"\1 [번호]",
+    ),
+]
+
+# '홍길동님/씨' 형태의 호칭 붙은 이름(경량 근사; 실무는 NER로 교체).
+# 호칭이 붙지만 이름이 아닌 일반 명사는 스톱리스트로 오탐을 막는다.
+_NAME_RE = re.compile(r"([가-힣]{2,4})\s?(님|씨)(?=[^가-힣]|$)")
+_NAME_STOP = {"선생", "고객", "담당자", "관리자", "여러분", "사장", "부장", "과장", "팀장", "간호사", "약사", "의사"}
+
+
+@dataclass
+class RedactionReport:
+    text: str                       # 마스킹된 텍스트
+    counts: dict[str, int]          # 유형별 마스킹 건수 (원 값은 절대 담지 않음)
+
+    @property
+    def redacted(self) -> bool:
+        return bool(self.counts)
+
+    def summary(self) -> list[dict]:
+        """API/UI 노출용 요약 — 유형과 건수만."""
+        return [{"type": t, "count": c} for t, c in self.counts.items()]
+
+
+def redact(text: str) -> RedactionReport:
+    """텍스트에서 PII 를 마스킹하고 유형별 건수를 보고한다."""
+    counts: dict[str, int] = {}
+    for kind, pattern, repl in _PATTERNS:
+        text, n = pattern.subn(repl, text)
+        if n:
+            counts[kind] = counts.get(kind, 0) + n
+
+    def _mask_name(m: re.Match[str]) -> str:
+        if m.group(1) in _NAME_STOP:
+            return m.group(0)
+        counts["이름(호칭)"] = counts.get("이름(호칭)", 0) + 1
+        return f"[이름]{m.group(2)}"
+
+    text = _NAME_RE.sub(_mask_name, text)
+    return RedactionReport(text=text, counts=counts)
