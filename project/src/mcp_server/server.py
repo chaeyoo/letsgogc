@@ -151,6 +151,7 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
     규칙 기반(결정론적)으로 판정한다 — 보고기한 계산은 컴플라이언스라 LLM 추론이
     아닌 감사 가능한 규칙으로 수행하고, 판정 근거 규정(REG-005) 문단을 함께 반환한다.
     입력 속 개인정보(주민번호·연락처·이름 등)는 반환 전에 마스킹된다.
+    부가로 인과성(WHO-UMC) 제안과 이상사례 표준 용어 코딩(MedDRA 방식)도 포함한다.
 
     Args:
         case_description: 이상사례 케이스 서술 (예: "환자가 복용 3일 후 아나필락시스로 입원").
@@ -159,13 +160,19 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
     Returns:
         {"case", "is_serious", "criteria_met", "expectedness", "route",
          "awareness_date", "deadline_date", "rationale", "caveats",
+         "causality": {"suggested","rationale","signals","missing_info"},
+         "coded_terms": [{"verbatim","pt","pt_en","soc"}...],
          "basis": {"results": [...]}}  — basis 는 판정 근거 규정 문단(출처 포함).
     """
+    from ..pv.causality import assess_causality
+    from ..pv.coding import code_terms
     from ..pv.redactor import redact
     from ..pv.triage import assess_case
 
     masked = redact(case_description)  # 심층방어: 도구 단독 사용(stdio) 시에도 PII 비노출
     t = assess_case(masked.text, awareness_date)
+    c = assess_causality(masked.text)
+    coded = code_terms(masked.text)
     # 판정 근거 규정 문단을 RAG로 회수해 부착(추적성) — 보고기한의 출처는 REG-005
     basis = search_regulations("중대한 이상사례 보고 기한 신속보고", top_n=2)
     return {
@@ -180,8 +187,100 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
         "deadline_date": t.deadline_date,
         "rationale": t.rationale,
         "caveats": t.caveats,
+        "causality": {
+            "suggested": c.suggested,
+            "rationale": c.rationale,
+            "signals": c.signals,
+            "missing_info": c.missing_info,
+        },
+        "coded_terms": [ct.as_dict() for ct in coded],
         "basis": basis,
     }
+
+
+@mcp.tool
+def draft_ae_report(
+    case_description: str,
+    suspected_drug: str = "",
+    reporter: str = "",
+    patient_info: str = "",
+    awareness_date: str = "",
+) -> dict:
+    """이상사례 개별사례보고(ICSR) 초안을 작성한다 — KAERS 제출용.
+
+    "이 케이스 보고서 초안 만들어줘", "KAERS 보고서 작성해줘" 처럼
+    '보고서 작성'을 요청받았을 때 사용한다. (중대성/기한만 궁금하면
+    assess_adverse_event, 규정 자체가 궁금하면 search_regulations 를 사용.)
+
+    수행 내용(전부 규칙 기반·결정론적):
+      1) 최소보고요건(ICH E2D 4요소: 환자·보고자·의심약·이상사례) 충족 검증
+         — 미충족이면 reportable=False 와 보완 항목을 반환한다.
+      2) 중대성 판정 + 보고기한 계산 (assess_adverse_event 와 동일 규칙)
+      3) 인과성(WHO-UMC) 등급 제안 + 부족 정보 follow-up 질문 생성
+      4) 이상사례 표준 용어 코딩(MedDRA 방식 PT/SOC)
+      5) 위를 종합한 마크다운 초안(draft_markdown) 조립
+    입력 속 개인정보는 초안 생성 전에 마스킹된다(초안에는 비식별 서술만 남음).
+
+    Args:
+        case_description: 이상사례 케이스 서술(자유 텍스트).
+        suspected_drug: 의심 의약품명(알면 지정 — 최소요건 ③).
+        reporter: 보고자 정보(예: "의사", "약사 홍OO" — 최소요건 ②).
+        patient_info: 환자 비식별 정보(예: "45세 남성" — 최소요건 ①).
+        awareness_date: 회사 인지일(YYYY-MM-DD). 생략 시 오늘.
+
+    Returns:
+        {"reportable", "missing", "followups", "draft_markdown",
+         "is_serious", "deadline_date", "causality", "coded_terms",
+         "pii_masked", "basis": {"results": [...]}}.
+    """
+    from ..pv.redactor import redact
+    from ..pv.report import build_report
+
+    masked = redact(case_description)
+    r = build_report(
+        masked.text,
+        suspected_drug=suspected_drug,
+        reporter=reporter,
+        patient_info=patient_info,
+        awareness_date=awareness_date,
+    )
+    basis = search_regulations("중대한 이상사례 보고 기한 신속보고 인과성 평가", top_n=2)
+    return {
+        "reportable": r.reportable,
+        "missing": r.missing,
+        "followups": r.followups,
+        "draft_markdown": r.draft_markdown,
+        "is_serious": r.triage.is_serious,
+        "deadline_date": r.triage.deadline_date,
+        "causality": {
+            "suggested": r.causality.suggested,
+            "rationale": r.causality.rationale,
+            "missing_info": r.causality.missing_info,
+        },
+        "coded_terms": [ct.as_dict() for ct in r.coded_terms],
+        "pii_masked": masked.summary(),
+        "basis": basis,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Prompts — MCP 의 세 번째 primitive (Tools·Resources·Prompts 3종 완성).
+# 서버가 '도구를 올바른 순서로 쓰는 워크플로'까지 배포한다: 어느 클라이언트
+# (Claude Desktop·Cursor·사내 에이전트)가 붙어도 같은 SOP 로 케이스를 처리한다.
+# ---------------------------------------------------------------------------
+@mcp.prompt
+def pv_case_intake(case_description: str) -> str:
+    """PV 이상사례 케이스 접수 SOP 프롬프트 — 접수부터 보고서 초안까지의 표준 절차."""
+    return (
+        "다음 이상사례 케이스를 PV 접수 SOP에 따라 처리하라.\n\n"
+        f"케이스: {case_description}\n\n"
+        "절차:\n"
+        "1. assess_adverse_event 로 중대성·보고기한·인과성 제안·용어 코딩을 확인한다.\n"
+        "2. 보고 기한의 근거 규정이 필요하면 search_regulations 로 원문을 확인한다.\n"
+        "3. draft_ae_report 로 ICSR 초안을 만들고, 최소보고요건 누락(missing)과\n"
+        "   follow-up 질문(followups)을 사용자에게 명확히 안내한다.\n"
+        "4. 모든 판정에 '최종 확정은 PV 담당자' 임을 밝히고, 출처(문서·섹션)를 제시한다."
+    )
 
 
 # ---------------------------------------------------------------------------

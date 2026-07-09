@@ -17,7 +17,8 @@
      └─(오프라인)  규칙 라우터 ─▶ MCP 도구 1회 호출 ─▶ grounded 답변 조립
                                    │
                      search_regulations ─▶ RAG(질의확장→하이브리드 검색→리랭킹) ─▶ 근거+출처
-                     assess_adverse_event ─▶ PV 트리아지(중대성 판정+기한 계산, 규칙) ─▶ 근거 규정 부착
+                     assess_adverse_event ─▶ PV 트리아지+인과성(WHO-UMC) 제안+용어 코딩 ─▶ 근거 규정 부착
+                     draft_ae_report ─▶ 최소보고요건(ICH E2D) 검증 ─▶ ICSR(KAERS) 초안 조립
                      get_ra_deadlines / get_submission_checklist ─▶ 업무 데이터
 ```
 
@@ -58,12 +59,16 @@
 
 - **왜 MCP인가:** 도구와 모델을 표준 규격으로 분리하면 N×M 통합이 N+M으로 준다.
   GC `Hey.GC 2.0`이 사내 시스템을 MCP로 통합하는 것과 같은 이유.
-- **노출 primitive:**
-  - Tools: `search_regulations`, `assess_adverse_event`(PV 트리아지), `get_ra_deadlines`,
+- **노출 primitive (3종 완성):**
+  - Tools: `search_regulations`, `assess_adverse_event`(PV 트리아지+인과성+코딩),
+    `draft_ae_report`(ICSR 초안+최소요건 검증), `get_ra_deadlines`,
     `get_submission_checklist`, `list_regulation_documents`
   - Resource: `regulation://{doc_id}` (문서 원문)
+  - Prompt: `pv_case_intake` (케이스 처리 SOP — 어느 클라이언트가 붙어도 같은 절차)
 - **결정론적 도구 원칙:** 보고기한 계산 같은 컴플라이언스 판정은 LLM이 아니라
   규칙 기반 도구(`src/pv/triage.py`)가 수행한다 — LLM은 도구 선택·설명만 담당.
+- **도구는 의도 단위로 분리:** "언제까지 보고?"(판정)와 "보고서 만들어줘"(산출물)는
+  다른 도구(`assess` vs `draft`)로 — 단, 같은 판정 규칙 모듈을 공유해 결과 불일치가 없다.
 - **도구 설명이 곧 LLM의 사용설명서:** 각 도구의 docstring·타입힌트가 에이전트의
   도구 선택 정확도를 좌우한다 → FDE의 실력이 드러나는 지점.
 - **두 실행 모드:** stdio(독립 실행, Claude Desktop/Cursor 연결) / 인메모리(`Client(mcp)`, 데모 기본).
@@ -84,11 +89,12 @@
 | **환각 억제** | 근거 관련도+커버리지 두 신호로 **abstention**(근거 없으면 "모른다") · grounded 검색 강제 |
 | **버전 안전성** | 폐지(superseded) 구판 자동 제외 · `as_of`로 과거 시점 규정 조회 |
 | **개인정보 보호** | 에이전트 입구에서 **PII 마스킹**(`pv/redactor.py`) — 외부 LLM API·로그·트레이스에 원문 비유출, 응답엔 유형·건수만 |
-| **컴플라이언스 계산 분리** | 보고기한·중대성 판정은 **규칙 기반 도구**(`pv/triage.py`) — LLM 추론에 맡기지 않아 감사 가능 |
+| **컴플라이언스 계산 분리** | 보고기한·중대성·최소보고요건 판정은 **규칙 기반 도구**(`pv/triage.py`·`pv/report.py`) — LLM 추론에 맡기지 않아 감사 가능 |
+| **판단 확신 수준 구분** | 닫힌 목록 '대조'(중대성)는 판정으로, 종합 '판단'(인과성)은 **제안+follow-up 질문**으로(`pv/causality.py`) |
 | **가용성** | LLM 키 없이도 폴백 동작(무중단 데모) |
 | **견고성** | MCP 도구 실패를 크래시 대신 흡수해 모델에 되먹임(자가 복구) |
 | **관측성** | 스텝별 지연·성패를 span 트레이스+구조화 로그로 기록(`observability.py`), 응답에 `trace`·`latency_ms` 노출 |
-| **검증성** | pytest 46케이스 + eval(검색·신뢰성)을 CI에서 매 푸시 실행 |
+| **검증성** | pytest 65케이스 + eval(검색·신뢰성)을 CI에서 매 푸시 실행 |
 | **확장성** | MCP로 도구 분리 · `EmbeddingProvider`로 임베더 교체(TF-IDF/해싱/Voyage) |
 
 ### 5.1 답변 신뢰성 측정 (`eval/faithfulness.py`)

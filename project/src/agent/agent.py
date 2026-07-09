@@ -166,8 +166,8 @@ class RaAgent:
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations":
                             raw_search_results.append(data)
-                        elif block.name == "assess_adverse_event" and data.get("basis"):
-                            raw_search_results.append(data["basis"])  # 트리아지 근거 규정도 출처로
+                        elif block.name in ("assess_adverse_event", "draft_ae_report") and data.get("basis"):
+                            raw_search_results.append(data["basis"])  # 트리아지/초안 근거 규정도 출처로
                     tool_calls.append(
                         ToolCall(
                             name=block.name,
@@ -214,6 +214,20 @@ class RaAgent:
         resolved = _resolve_followup(message, history)
         async with Client(mcp) as mcp_client:
             intent = _route_intent(resolved)
+
+            if intent == "ae_report":
+                # 케이스 서술 + '보고서 작성' 요청 → ICSR 초안 도구(트리아지+인과성+코딩+최소요건)
+                args = {"case_description": resolved}
+                with timed(trace, "tool.draft_ae_report", "tool", {"args": args}):
+                    data = (await mcp_client.call_tool("draft_ae_report", args)).data
+                tool_calls.append(ToolCall("draft_ae_report", args, _summarize(data)))
+                return AgentResult(
+                    answer=_format_report(data),
+                    mode="offline",
+                    tool_calls=tool_calls,
+                    citations=_collect_citations(tool_calls, [data.get("basis", {})]),
+                    grounded=True,
+                )
 
             if intent == "ae_triage":
                 # 구체적 케이스 서술 → PV 트리아지 도구(중대성 판정+기한 계산)
@@ -350,11 +364,17 @@ _AE_EVENT_MARKERS = (
 )
 
 
+_AE_REPORT_MARKERS = ("보고서", "초안", "kaers", "icsr", "보고서 작성", "보고서 만들")
+
+
 def _route_intent(message: str) -> str:
     m = message.lower()
     # AE 트리아지: '구체적 케이스 서술'일 때만 (환자/복용 맥락 + 사건 어휘).
     # "중대한 이상사례는 며칠 안에 보고?" 같은 '규정 질문'은 search 로 남긴다.
     if any(k in m for k in _AE_CASE_MARKERS) and any(k in m for k in _AE_EVENT_MARKERS):
+        # 같은 케이스라도 '보고서 작성' 요청이면 초안 도구로(트리아지는 판정만).
+        if any(k in m for k in _AE_REPORT_MARKERS):
+            return "ae_report"
         return "ae_triage"
     if any(k in m for k in ["마감", "기한", "일정", "언제까지", "d-day", "디데이", "며칠", "남은"]):
         # '보고 기한' 같은 규정 질문과 구분: 업무 일정 신호가 강할 때만
@@ -406,11 +426,32 @@ def _format_triage(data: dict) -> str:
             + (", 지체 없이)" if data.get("deadline_days") == 0 else f", {data.get('deadline_days')}일 이내)")
         )
     lines.append(f"- 판정 사유: {data.get('rationale', '')}")
+    if data.get("coded_terms"):
+        coded = " · ".join(f"{t['verbatim']}→{t['pt']}({t['pt_en']})" for t in data["coded_terms"])
+        lines.append(f"- 표준 용어 코딩(MedDRA 방식): {coded}")
+    cz = data.get("causality") or {}
+    if cz.get("suggested"):
+        lines.append(f"- 인과성(WHO-UMC) 제안: {cz['suggested']} — {cz.get('rationale', '')}")
+        if cz.get("missing_info"):
+            lines.append(f"  · 보고자 확인 필요: {'; '.join(cz['missing_info'][:2])} 등")
     if data.get("pii_masked"):
         masked = ", ".join(f"{m['type']} {m['count']}건" for m in data["pii_masked"])
         lines.append(f"- 🔒 개인정보 마스킹: {masked}")
     for c in data.get("caveats", []):
         lines.append(f"- ⚠ {c}")
+    return "\n".join(lines)
+
+
+def _format_report(data: dict) -> str:
+    """draft_ae_report 결과 → 초안 본문 + 보완 안내."""
+    lines = [data.get("draft_markdown", "").strip()]
+    followups = data.get("followups", [])
+    if followups:
+        lines += ["", "📌 보고 확정 전 확인/보완할 항목:"]
+        lines += [f"- {f}" for f in followups]
+    if data.get("pii_masked"):
+        masked = ", ".join(f"{m['type']} {m['count']}건" for m in data["pii_masked"])
+        lines += ["", f"🔒 개인정보 마스킹: {masked} (초안에는 비식별 서술만 포함)"]
     return "\n".join(lines)
 
 
@@ -436,6 +477,9 @@ def _format_search_answer(query: str, data: dict) -> str:
 
 def _summarize(data: Any) -> str:
     if isinstance(data, dict):
+        if "reportable" in data:
+            n_missing = len(data.get("missing", []))
+            return "초안 완성(요건 충족)" if data["reportable"] else f"초안 생성(보완 {n_missing}건 필요)"
         if "is_serious" in data:
             return "중대 → " + data.get("route", "") if data["is_serious"] else "비중대 → PSUR"
         if "results" in data:
