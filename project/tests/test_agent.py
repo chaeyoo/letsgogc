@@ -75,3 +75,13 @@ async def test_tool_failure_is_absorbed_not_crashed():
     )
     assert is_error is True
     assert "실행 실패" in data
+
+
+@pytest.mark.asyncio
+async def test_colloquial_in_scope_not_over_abstained():
+    """abstention 문턱 보정의 회귀 가드: 검색이 동의어 확장으로 정답을 찾는
+    구어 질의는 '근거 없음'으로 회피하면 안 된다(과회피였던 실제 사례)."""
+    agent = RaAgent()
+    r = await agent.chat("부작용이 심각하게 나타났을 때 당국에 얼마나 빨리 알려야 하나요?")
+    assert r.grounded is True, "확장 커버리지를 반영하면 범위내로 판정되어야 함"
+    assert r.citations

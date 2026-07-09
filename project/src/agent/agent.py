@@ -22,15 +22,22 @@ from .. import config
 from ..mcp_server.server import mcp
 from ..observability import Trace, timed
 from ..pv.redactor import redact
+from ..rag.synonyms import expand_query
 from ..rag.textutil import tokenize
 
 # 근거 부족(abstention) 판단 임계값 — 제약 규제 도메인의 환각 안전장치.
 # 두 신호를 함께 본다: (1) 최상위 근거의 검색 관련도 점수, (2) 질의-근거 토큰 커버리지.
 # 둘 다 문턱 아래일 때만("확실히 근거 없음") 답을 지어내지 않고 회피한다.
 # AND 조건을 쓰는 이유: 콜로퀄한 범위내 질문은 점수는 낮아도 커버리지가 남아있어
-# 과도한 회피(over-abstention)를 피할 수 있다. 문턱값은 범위내/범위밖 분포로 보정.
-SCORE_FLOOR = 0.22       # 최상위 근거 관련도 하한
-COVERAGE_FLOOR = 0.26    # 질의 토큰 커버리지 하한
+# 과도한 회피(over-abstention)를 피할 수 있다.
+#
+# 문턱값은 범위내(qa_dataset)/범위밖(abstention_dataset) 분포를 실측해 마진
+# 중앙으로 보정한 값이다(리랭커 공식이 바뀌면 점수 스케일이 바뀌므로 재보정 필수):
+#   범위밖 최대  score=0.167, cov=0.250  → 이보다 위에 문턱
+#   범위내 최소  score=0.156(cov 0.314) / cov=0.227(score 0.201)
+#   → SCORE_FLOOR ∈ (0.167, 0.201), COVERAGE_FLOOR ∈ (0.250, 0.314)
+SCORE_FLOOR = 0.19       # 최상위 근거 관련도 하한
+COVERAGE_FLOOR = 0.28    # (확장)질의 토큰 커버리지 하한
 
 SYSTEM_PROMPT = (
     "당신은 제약회사 RA(인허가·규제업무) 담당자를 돕는 어시스턴트다. "
@@ -348,8 +355,14 @@ def _grounding_coverage(query: str, results: list[dict]) -> float:
 
     낮으면 검색이 답할 '재료'를 못 찾은 것 → abstention 신호.
     (LLM 모드에서 생성된 답의 faithfulness 를 사후 점검하는 데도 같은 지표를 쓴다.)
+
+    커버리지는 '확장 질의' 기준으로 계산한다. 검색 자체가 동의어 확장
+    ("부작용"→"이상사례")으로 정답을 찾는데, 회피 판정만 원 질의 토큰으로
+    보면 정답을 찾아 놓고도 "근거 없음"이라 답하는 자기모순(과회피)이 생긴다
+    — 범위밖 질문은 도메인 용어가 없어 확장되지 않으므로 이 보정은
+    범위밖 회피 정확도를 해치지 않는다(faithfulness eval 로 검증).
     """
-    q_tokens = set(tokenize(query))
+    q_tokens = set(tokenize(expand_query(query)))
     if not q_tokens:
         return 0.0
     ctx = "\n".join(r.get("text", "") for r in results)
