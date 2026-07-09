@@ -8,6 +8,7 @@ from src.mcp_server.server import (
     get_ra_deadlines,
     get_submission_checklist,
     list_regulation_documents,
+    pv_case_intake,
     search_regulations,
 )
 
@@ -41,6 +42,14 @@ def test_checklist_known_and_unknown():
     assert ok["category"] == "품목허가" and ok["items"]
     bad = get_submission_checklist("존재하지않는유형")
     assert "error" in bad and "available" in bad
+
+
+def test_pv_intake_prompt_encodes_sop():
+    """MCP Prompt: 케이스 처리 SOP(도구 호출 순서)가 프롬프트에 배포된다."""
+    p = pv_case_intake("환자가 복용 후 입원")
+    assert "환자가 복용 후 입원" in p
+    for tool in ["assess_adverse_event", "search_regulations", "draft_ae_report"]:
+        assert tool in p
 
 
 def test_list_documents_contract():
