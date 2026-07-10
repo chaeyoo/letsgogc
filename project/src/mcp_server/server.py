@@ -1,11 +1,15 @@
-"""RA(규제업무) 어시스턴트를 위한 MCP 서버.
+"""RA(규제업무)·PV(약물감시) 어시스턴트를 위한 MCP 서버.
 
 GC 'Hey.GC 2.0'가 MCP 구조로 사내 시스템을 통합하는 것과 동일한 패턴으로,
-제약 RA 담당자의 업무 시스템(규제문서·마감일·체크리스트)을 MCP 도구로 노출한다.
+제약 RA·PV 담당자의 업무 시스템(규제문서·마감일·체크리스트·이상사례 처리)을 MCP 도구로 노출한다.
 
 노출하는 MCP primitive:
   - Tools:     search_regulations / get_ra_deadlines / get_submission_checklist
+               / assess_adverse_event (PV 트리아지+인과성+코딩)
+               / draft_ae_report (ICSR 초안+최소보고요건 검증)
+               / list_regulation_documents
   - Resources: regulation://{doc_id}  (규제문서 원문 조회)
+  - Prompts:   pv_case_intake  (케이스 처리 SOP — 클라이언트 무관 동일 절차)
 
 이 서버는 두 가지로 사용된다.
   (1) 독립 실행:  python -m src.mcp_server.server   (stdio transport, Claude Desktop/Cursor 연결)
