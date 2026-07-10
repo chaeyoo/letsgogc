@@ -113,16 +113,40 @@ def _collect_citations(tool_calls: list[ToolCall], raw_results: list[dict]) -> l
     return cites
 
 
-def _finalize(result: AgentResult, trusted_texts: list[str], allow_superseded: bool = False) -> AgentResult:
-    """모든 응답이 통과하는 사후 검증 게이트 — 답변 속 수치·날짜를 신뢰 소스
-    (검색 근거 + 결정론적 도구 출력)와 대조하고 폐지본 인용을 점검한다.
+def _strip_query_echo(data: Any) -> Any:
+    """도구 출력에서 질의 에코 필드(query)를 재귀 제거한 사본을 만든다.
+
+    신뢰 소스는 '근거 문단 ∪ 도구 출력'인데, search 계열 도구는 받은 질의를
+    출력에 에코한다. 이를 그대로 신뢰하면 **사용자 질문 속 수치가 신뢰 소스로
+    승격**되어, 사용자가 틀린 수치를 전제로 물었을 때 모델이 맞장구쳐도
+    검증을 통과하는 구멍이 생긴다. 케이스 서술(case)은 남긴다 — 그것은
+    검증할 규정 클레임이 아니라 사용자가 제공한 '사실'이다.
+    """
+    if isinstance(data, dict):
+        return {k: _strip_query_echo(v) for k, v in data.items() if k != "query"}
+    if isinstance(data, list):
+        return [_strip_query_echo(v) for v in data]
+    return data
+
+
+def _finalize(
+    result: AgentResult,
+    trusted_texts: list[str],
+    allow_superseded: bool = False,
+    question: str = "",
+) -> AgentResult:
+    """모든 응답이 통과하는 사후 검증 게이트 — 답변 속 수치·날짜·방향 한정어를
+    신뢰 소스(검색 근거 + 결정론적 도구 출력, 질문 에코 제외)와 대조하고
+    폐지본 인용을 점검한다.
 
     실패해도 답변을 차단하지 않는다 — 경고를 본문에 부착하고 verification
     필드로 노출한다(시끄러운 실패, 최종 확정은 사람). 오프라인 모드는 추출형이라
     통과가 정상이며, 통과 자체가 '포매터가 근거 밖 수치를 만들지 않는다'는
     회귀 가드가 된다. LLM 모드는 생성 답변이므로 이 게이트가 실질 방어선이다.
+    question 을 넘기는 이유: 미확인 수치가 질문에 있던 값이면 '환각'이 아니라
+    '전제 확인 필요'로 경고 문구를 조정한다(정정 답변의 오탐 완화).
     """
-    v = verify_answer(result.answer, trusted_texts, result.citations, allow_superseded)
+    v = verify_answer(result.answer, trusted_texts, result.citations, allow_superseded, question=question)
     if not v.ok:
         result.answer = f"{result.answer}\n\n{warning_text(v)}"
     result.verification = v.summary()
@@ -188,6 +212,7 @@ class RaAgent:
                         ),
                         trusted_texts,
                         allow_superseded,
+                        question=message,
                     )
 
                 # 도구 호출 실행
@@ -200,7 +225,9 @@ class RaAgent:
                         mcp_client, block.name, dict(block.input), trace
                     )
                     if not is_error:
-                        trusted_texts.append(_stringify(data))  # 도구 출력 = 검증 신뢰 소스
+                        # 도구 출력 = 검증 신뢰 소스. 단 질의 에코(query)는 제외 —
+                        # 사용자 전제가 신뢰 소스로 승격되는 구멍을 막는다.
+                        trusted_texts.append(_stringify(_strip_query_echo(data)))
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations":
                             raw_search_results.append(data)
@@ -237,6 +264,7 @@ class RaAgent:
                 ),
                 trusted_texts,
                 allow_superseded,
+                question=message,
             )
 
     async def _safe_tool_call(self, mcp_client, name: str, args: dict, trace: Trace):
@@ -273,7 +301,8 @@ class RaAgent:
                         citations=_collect_citations(tool_calls, [data.get("basis", {})]),
                         grounded=True,
                     ),
-                    [_stringify(data)],
+                    [_stringify(_strip_query_echo(data))],
+                    question=resolved,
                 )
 
             if intent == "ae_triage":
@@ -290,7 +319,8 @@ class RaAgent:
                         citations=_collect_citations(tool_calls, [data.get("basis", {})]),
                         grounded=True,
                     ),
-                    [_stringify(data)],
+                    [_stringify(_strip_query_echo(data))],
+                    question=resolved,
                 )
 
             if intent == "deadlines":
@@ -302,6 +332,7 @@ class RaAgent:
                 return _finalize(
                     AgentResult(answer=answer, mode="offline", tool_calls=tool_calls),
                     [_stringify(data)],
+                    question=resolved,
                 )
 
             if intent == "checklist":
@@ -314,6 +345,7 @@ class RaAgent:
                 return _finalize(
                     AgentResult(answer=answer, mode="offline", tool_calls=tool_calls),
                     [_stringify(data)],
+                    question=resolved,
                 )
 
             # 기본: 규제문서 검색 후 근거 기반 답변
@@ -339,8 +371,9 @@ class RaAgent:
                         grounded=False,
                     ),
                     [],  # 회피 답변은 수치 클레임이 없어 자명하게 통과 — 그래야 정상
+                    question=resolved,
                 )
-            answer = _format_search_answer(resolved, data)
+            answer = _format_search_answer(data)
             return _finalize(
                 AgentResult(
                     answer=answer,
@@ -349,7 +382,8 @@ class RaAgent:
                     citations=_collect_citations(tool_calls, [data]),
                     grounded=True,
                 ),
-                [_stringify(data)],
+                [_stringify(_strip_query_echo(data))],
+                question=resolved,
             )
 
 
@@ -523,16 +557,16 @@ def _format_report(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_search_answer(query: str, data: dict) -> str:
+def _format_search_answer(data: dict) -> str:
     results = data.get("results", [])
     if not results:
         return "관련 규정을 찾지 못했습니다. 질문을 바꿔 다시 시도해 주세요."
-    # grounded 추출: 최상위 근거를 중심으로 요약 제시(오프라인이라 생성 대신 발췌)
+    # grounded 추출: 최상위 근거를 중심으로 요약 제시(오프라인이라 생성 대신 발췌).
+    # 질문을 본문에 재인쇄하지 않는다 — 답변 본문은 검증 대상 클레임 공간이라,
+    # 사용자 전제(질문 속 수치)를 그대로 옮기면 그것도 클레임이 된다.
     lines = [
         "※ 오프라인 모드: LLM 없이 검색 근거를 발췌해 제시합니다 "
         "(ANTHROPIC_API_KEY 설정 시 근거를 종합한 자연어 답변으로 자동 전환).",
-        "",
-        f"질문: {query}",
         "",
         "가장 관련 높은 규정 근거:",
     ]
