@@ -52,6 +52,7 @@ class ChatResponse(BaseModel):
     trace: list[dict] = Field(default_factory=list)
     latency_ms: float = 0.0
     redactions: list[dict] = Field(default_factory=list)  # PII 마스킹 내역(유형·건수만)
+    verification: dict = Field(default_factory=dict)  # 답변 사후 검증(수치 대조·버전 점검)
 
 
 @app.get("/health")
@@ -89,6 +90,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         trace=result.trace,
         latency_ms=result.latency_ms,
         redactions=result.redactions,
+        verification=result.verification,
     )
 
 

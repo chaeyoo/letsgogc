@@ -127,7 +127,15 @@ function renderBot(bubble, data) {
   // PII 마스킹 배지: 개인정보가 외부 LLM/로그로 나가기 전에 마스킹됐음을 표시
   const red = (data.redactions && data.redactions.length)
     ? `<span class="pill warn">🔒 개인정보 마스킹: ${data.redactions.map(r => `${esc(r.type)} ${r.count}건`).join(', ')}</span>` : '';
-  html += `<div class="meta">${gb}${lat}${red}</div>`;
+  // 사후 검증 배지: 답변 속 수치·날짜가 근거/도구 결과와 대조됐음을 표시
+  let ver = '';
+  if (data.verification && typeof data.verification.ok === 'boolean') {
+    const v = data.verification;
+    ver = v.ok
+      ? (v.checked ? `<span class="pill ok">🔍 수치 검증 통과 (${v.checked}건 대조)</span>` : '')
+      : `<span class="pill warn">🔍 검증 경고: 미확인 ${(v.unsupported||[]).map(esc).join(', ')}${(v.superseded_cited||[]).length ? ' · 폐지본 인용 ' + v.superseded_cited.map(esc).join(', ') : ''}</span>`;
+  }
+  html += `<div class="meta">${gb}${lat}${red}${ver}</div>`;
   if (data.tool_calls && data.tool_calls.length) {
     html += `<div class="trace">🔧 호출한 MCP 도구: ` +
       data.tool_calls.map(t => `<span class="tool">${esc(t.name)} · ${esc(t.summary||'')}</span>`).join('') +
