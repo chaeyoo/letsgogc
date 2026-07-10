@@ -16,6 +16,10 @@
      원문 PII(주민번호·전화·이름)가 남지 않는다.
   6. 코딩 계층 배타성 — 확정/후보/미코딩 3계층은 서로 겹치지 않는다.
      겹치는 순간 '검수된 집계'와 '검수 대기 큐'의 신뢰 등급 구분이 무너진다.
+  7. 검증기 자기일관성 — 어떤 텍스트도 자기 자신을 신뢰 소스로 주면 항상
+     통과한다: verify_answer(x, [x]).ok. 답변 쪽과 근거 쪽의 클레임 추출이
+     비대칭이 되는 회귀(정규화·단위 목록을 한쪽만 고친 경우)를 잡는다 —
+     CleanPassRate(verify_eval)의 성질 버전.
 
 시드를 고정하는 이유: CI에서 같은 케이스가 재현되어야 실패를 디버깅할 수
 있다. 무작위성은 '입력 다양성'을 위한 것이지 '매번 다른 테스트'가 목적이
@@ -140,3 +144,25 @@ def test_coding_layers_are_mutually_exclusive():
         coded_verbatims = {t.verbatim for t in r.coded_terms} | {t.verbatim for t in r.candidate_terms}
         for u in r.uncoded_expressions:
             assert u not in coded_verbatims, f"미코딩이 코딩 계층과 중복: {u}"
+
+
+# ---------------------------------------------------------------------------
+# 7. 검증기 자기일관성 — verify_answer(x, [x]) 는 어떤 x 에서도 통과한다
+# ---------------------------------------------------------------------------
+_CLAIM_FRAGMENTS = [
+    "인지일로부터 15일 이내 보고한다.", "심사는 **120 근무일** 이내에 처리된다.",
+    "보완 회신은 90일 이내, 재보완은 6개월 미만.", "유효기간은 03년이며 2026-07-25 까지다.",
+    "접수 후 15~30일 소요된다.", "보름 안에 제출하고 한 달 뒤 재심사.",
+    "수수료는 1,000회 기준 5% 할인.", "2주일 이상 지속되면 재평가한다.",
+    "지체 없이 보고한다(수치 없음).", "안정성시험은 6개월 이상 수행한다.",
+]
+
+
+def test_verifier_self_consistency():
+    rng = random.Random(20260710)
+    for _ in range(60):
+        text = " ".join(rng.sample(_CLAIM_FRAGMENTS, k=rng.randint(1, len(_CLAIM_FRAGMENTS))))
+        from src.verify.verifier import verify_answer
+
+        v = verify_answer(text, [text])
+        assert v.ok, f"자기 자신을 근거로 줘도 실패: {v.summary()} ← {text!r}"
