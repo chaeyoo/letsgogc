@@ -34,3 +34,6 @@ jobs:
 
       - name: PV 워크플로 평가 (트리아지·인과성·코딩·보고요건)
         run: python -m eval.pv_eval
+
+      - name: 답변 사후 검증기 평가 (메타모픽 — 변조 탐지·오탐 감시)
+        run: python -m eval.verify_eval

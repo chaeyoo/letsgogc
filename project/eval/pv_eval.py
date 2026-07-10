@@ -132,6 +132,10 @@ def evaluate() -> dict:
     f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
     return {
         "n": n,
+        "counts": {
+            "serious_ok": serious_ok, "deadline_ok": deadline_ok,
+            "reportable_ok": reportable_ok, "coding_tp": tp, "coding_fn": fn,
+        },
         "SeriousnessAcc": round(serious_ok / n, 3),
         "DeadlineAcc": round(deadline_ok / n, 3),
         "CausalityAcc": round(causality_ok / n, 3),
@@ -167,6 +171,13 @@ def main() -> None:
     print(f"ReportableAcc   (최소보고요건 4요소)    : {res['ReportableAcc']:.3f}")
     if res["MissingCountAcc"] is not None:
         print(f"MissingCountAcc (빠진 요소 개수 정확도) : {res['MissingCountAcc']:.3f}")
+    from eval.stats import fmt_ci
+
+    c = res["counts"]
+    print("-" * 62)
+    print("통계적 정직성 (Wilson 95% CI — n=22 표본에서 1.000의 의미):")
+    print(f"  SeriousnessAcc {fmt_ci(c['serious_ok'], res['n'])} · DeadlineAcc {fmt_ci(c['deadline_ok'], res['n'])}")
+    print(f"  ReportableAcc  {fmt_ci(c['reportable_ok'], res['n'])} · CodingRecall {fmt_ci(c['coding_tp'], c['coding_tp'] + c['coding_fn'])}")
     if res["failures"]:
         print("-" * 62)
         print("불일치 상세 (의도된 롱테일 감점 포함):")

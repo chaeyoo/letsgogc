@@ -93,6 +93,7 @@ def evaluate(mode: str, top_k: int, rerank_n: int, pipe: RagPipeline | None = No
     latencies.sort()
     return {
         "n": n,
+        "counts": {"hits1": hits1, "hn_hits1": hn_hits1, "hn_total": hn_total},
         "Hit@1": round(hits1 / n, 3),
         "Hit@3": round(hits3 / n, 3),
         "MRR": round(mrr_sum / n, 3),
@@ -138,6 +139,18 @@ def main() -> None:
     print("   어휘 불일치를 메워 Hit@1이 오른다. 확장은 1단계 회수에 전 가중으로,")
     print("   2단계 리랭킹엔 절반 가중의 보조 신호로만 반영(정밀도 희석 방지).")
     print("   하이퍼파라미터 스윕·ablation 근거는 python -m eval.sweep 으로 재현.")
+
+    # --- 통계적 정직성: 소표본 지표에 95% 신뢰구간(Wilson) 병기 ---
+    from eval.stats import fmt_ci
+
+    best = res["④ +질의확장"]
+    c, n = best["counts"], best["n"]
+    print()
+    print("통계적 정직성 (운영 기본 ④, Wilson 95% CI):")
+    print(f" - Hit@1        : {fmt_ci(c['hits1'], n)}  (n={n})")
+    print(f" - HardNegHit@1 : {fmt_ci(c['hn_hits1'], c['hn_total'])}  (n={c['hn_total']})")
+    print("   → 1.000은 '완벽'이 아니라 '이 표본에서 실패 관측 0'이라는 뜻이다.")
+    print("     구간 하한이 진짜 성능의 보수적 추정 — 개선 주장은 구간이 갈릴 때만 한다.")
 
     # --- 임베딩 provider 비교(pluggable 실증) ---
     print()

@@ -66,6 +66,7 @@ async def _run() -> dict:
     return {
         "n_in_scope": n_in,
         "n_oos": n_oos,
+        "counts": {"grounded": grounded_hits, "cited": cited, "abstained": abstained},
         "AnswerGroundedness": round(grounded_hits / n_in, 3),
         "CitationRate": round(cited / n_in, 3),
         "OverAbstain": round(wrong_abstain / n_in, 3),
@@ -84,6 +85,13 @@ def main() -> None:
     print(f"CitationRate       (범위내 답에 출처 부착)   : {res['CitationRate']:.3f}")
     print(f"OverAbstain        (범위내인데 과도 회피)    : {res['OverAbstain']:.3f}  (낮을수록 좋음)")
     print(f"AbstentionAccuracy (범위밖에서 환각 대신 회피): {res['AbstentionAccuracy']:.3f}")
+    print("-" * 60)
+    from eval.stats import fmt_ci
+
+    c = res["counts"]
+    print("통계적 정직성 (Wilson 95% CI — 1.000은 '이 표본에서 실패 관측 0'):")
+    print(f"  AnswerGroundedness {fmt_ci(c['grounded'], res['n_in_scope'])} (n={res['n_in_scope']})")
+    print(f"  AbstentionAccuracy {fmt_ci(c['abstained'], res['n_oos'])} (n={res['n_oos']})")
     print("-" * 60)
     print("해석: 검색이 정답 재료를 주고(AnswerGroundedness), 답에는 출처가 붙으며(CitationRate),")
     print("      범위 밖 질문에는 지어내지 않고 '근거 없음'으로 답한다(AbstentionAccuracy).")

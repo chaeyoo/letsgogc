@@ -24,6 +24,7 @@ from ..observability import Trace, timed
 from ..pv.redactor import redact
 from ..rag.synonyms import expand_query
 from ..rag.textutil import tokenize
+from ..verify.verifier import verify_answer, warning_text
 
 # 근거 부족(abstention) 판단 임계값 — 제약 규제 도메인의 환각 안전장치.
 # 두 신호를 함께 본다: (1) 최상위 근거의 검색 관련도 점수, (2) 질의-근거 토큰 커버리지.
@@ -68,6 +69,7 @@ class AgentResult:
     trace: list[dict] = field(default_factory=list)   # 스텝별 지연·성패(관측성)
     latency_ms: float = 0.0        # 총 처리 지연
     redactions: list[dict] = field(default_factory=list)  # PII 마스킹 내역(유형·건수만)
+    verification: dict = field(default_factory=dict)  # 사후 검증 결과(수치 대조·버전 점검)
 
 
 # ---------------------------------------------------------------------------
@@ -104,10 +106,27 @@ def _collect_citations(tool_calls: list[ToolCall], raw_results: list[dict]) -> l
                     "section": r.get("section"),
                     "version": r.get("version"),
                     "effective_date": r.get("effective_date"),
+                    "status": r.get("status"),  # 사후 검증(폐지본 인용 감지)에 사용
                     "score": r.get("score"),
                 }
             )
     return cites
+
+
+def _finalize(result: AgentResult, trusted_texts: list[str], allow_superseded: bool = False) -> AgentResult:
+    """모든 응답이 통과하는 사후 검증 게이트 — 답변 속 수치·날짜를 신뢰 소스
+    (검색 근거 + 결정론적 도구 출력)와 대조하고 폐지본 인용을 점검한다.
+
+    실패해도 답변을 차단하지 않는다 — 경고를 본문에 부착하고 verification
+    필드로 노출한다(시끄러운 실패, 최종 확정은 사람). 오프라인 모드는 추출형이라
+    통과가 정상이며, 통과 자체가 '포매터가 근거 밖 수치를 만들지 않는다'는
+    회귀 가드가 된다. LLM 모드는 생성 답변이므로 이 게이트가 실질 방어선이다.
+    """
+    v = verify_answer(result.answer, trusted_texts, result.citations, allow_superseded)
+    if not v.ok:
+        result.answer = f"{result.answer}\n\n{warning_text(v)}"
+    result.verification = v.summary()
+    return result
 
 
 class RaAgent:
@@ -138,6 +157,8 @@ class RaAgent:
         client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         tool_calls: list[ToolCall] = []
         raw_search_results: list[dict] = []
+        trusted_texts: list[str] = []   # 사후 검증의 신뢰 소스(성공한 도구 출력 전체)
+        allow_superseded = False        # 사용자가 명시적으로 이력(폐지본) 조회를 했는가
 
         async with Client(mcp) as mcp_client:
             tools = _to_anthropic_tools(await mcp_client.list_tools())
@@ -157,11 +178,16 @@ class RaAgent:
                     text = "".join(
                         b.text for b in resp.content if b.type == "text"
                     ).strip()
-                    return AgentResult(
-                        answer=text,
-                        mode="llm",
-                        tool_calls=tool_calls,
-                        citations=_collect_citations(tool_calls, raw_search_results),
+                    # 생성 답변은 매번 다르므로 평가셋이 아니라 '이 답변'을 검증한다
+                    return _finalize(
+                        AgentResult(
+                            answer=text,
+                            mode="llm",
+                            tool_calls=tool_calls,
+                            citations=_collect_citations(tool_calls, raw_search_results),
+                        ),
+                        trusted_texts,
+                        allow_superseded,
                     )
 
                 # 도구 호출 실행
@@ -173,9 +199,13 @@ class RaAgent:
                     data, is_error = await self._safe_tool_call(
                         mcp_client, block.name, dict(block.input), trace
                     )
+                    if not is_error:
+                        trusted_texts.append(_stringify(data))  # 도구 출력 = 검증 신뢰 소스
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations":
                             raw_search_results.append(data)
+                            if block.input.get("include_superseded") or block.input.get("as_of"):
+                                allow_superseded = True  # 이력 조회 의도 — 폐지본 인용은 결함 아님
                         elif block.name in ("assess_adverse_event", "draft_ae_report") and data.get("basis"):
                             raw_search_results.append(data["basis"])  # 트리아지/초안 근거 규정도 출처로
                     tool_calls.append(
@@ -198,11 +228,15 @@ class RaAgent:
                 messages.append({"role": "user", "content": tool_results_content})
 
             # 루프 한계 도달
-            return AgentResult(
-                answer="(도구 호출이 반복되어 응답을 확정하지 못했습니다. 질문을 좁혀 다시 시도해 주세요.)",
-                mode="llm",
-                tool_calls=tool_calls,
-                citations=_collect_citations(tool_calls, raw_search_results),
+            return _finalize(
+                AgentResult(
+                    answer="(도구 호출이 반복되어 응답을 확정하지 못했습니다. 질문을 좁혀 다시 시도해 주세요.)",
+                    mode="llm",
+                    tool_calls=tool_calls,
+                    citations=_collect_citations(tool_calls, raw_search_results),
+                ),
+                trusted_texts,
+                allow_superseded,
             )
 
     async def _safe_tool_call(self, mcp_client, name: str, args: dict, trace: Trace):
@@ -231,12 +265,15 @@ class RaAgent:
                 with timed(trace, "tool.draft_ae_report", "tool", {"args": args}):
                     data = (await mcp_client.call_tool("draft_ae_report", args)).data
                 tool_calls.append(ToolCall("draft_ae_report", args, _summarize(data)))
-                return AgentResult(
-                    answer=_format_report(data),
-                    mode="offline",
-                    tool_calls=tool_calls,
-                    citations=_collect_citations(tool_calls, [data.get("basis", {})]),
-                    grounded=True,
+                return _finalize(
+                    AgentResult(
+                        answer=_format_report(data),
+                        mode="offline",
+                        tool_calls=tool_calls,
+                        citations=_collect_citations(tool_calls, [data.get("basis", {})]),
+                        grounded=True,
+                    ),
+                    [_stringify(data)],
                 )
 
             if intent == "ae_triage":
@@ -245,12 +282,15 @@ class RaAgent:
                 with timed(trace, "tool.assess_adverse_event", "tool", {"args": args}):
                     data = (await mcp_client.call_tool("assess_adverse_event", args)).data
                 tool_calls.append(ToolCall("assess_adverse_event", args, _summarize(data)))
-                return AgentResult(
-                    answer=_format_triage(data),
-                    mode="offline",
-                    tool_calls=tool_calls,
-                    citations=_collect_citations(tool_calls, [data.get("basis", {})]),
-                    grounded=True,
+                return _finalize(
+                    AgentResult(
+                        answer=_format_triage(data),
+                        mode="offline",
+                        tool_calls=tool_calls,
+                        citations=_collect_citations(tool_calls, [data.get("basis", {})]),
+                        grounded=True,
+                    ),
+                    [_stringify(data)],
                 )
 
             if intent == "deadlines":
@@ -259,7 +299,10 @@ class RaAgent:
                     data = (await mcp_client.call_tool("get_ra_deadlines", args)).data
                 tool_calls.append(ToolCall("get_ra_deadlines", args, _summarize(data)))
                 answer = _format_deadlines(data)
-                return AgentResult(answer=answer, mode="offline", tool_calls=tool_calls)
+                return _finalize(
+                    AgentResult(answer=answer, mode="offline", tool_calls=tool_calls),
+                    [_stringify(data)],
+                )
 
             if intent == "checklist":
                 category = _guess_category(resolved)
@@ -268,7 +311,10 @@ class RaAgent:
                     data = (await mcp_client.call_tool("get_submission_checklist", args)).data
                 tool_calls.append(ToolCall("get_submission_checklist", args, _summarize(data)))
                 answer = _format_checklist(data)
-                return AgentResult(answer=answer, mode="offline", tool_calls=tool_calls)
+                return _finalize(
+                    AgentResult(answer=answer, mode="offline", tool_calls=tool_calls),
+                    [_stringify(data)],
+                )
 
             # 기본: 규제문서 검색 후 근거 기반 답변
             args = {"query": resolved, "top_n": 3}
@@ -281,23 +327,29 @@ class RaAgent:
             top_score = results[0].get("score", 0.0) if results else 0.0
             coverage = _grounding_coverage(resolved, results)
             if top_score < SCORE_FLOOR and coverage < COVERAGE_FLOOR:
-                return AgentResult(
-                    answer=(
-                        "제공된 사내 규제문서에서 이 질문에 답할 근거를 찾지 못했습니다. "
-                        "질문을 규제업무(허가·변경·GMP·라벨링·약물감시·임상) 범위로 좁혀 다시 시도해 주세요."
+                return _finalize(
+                    AgentResult(
+                        answer=(
+                            "제공된 사내 규제문서에서 이 질문에 답할 근거를 찾지 못했습니다. "
+                            "질문을 규제업무(허가·변경·GMP·라벨링·약물감시·임상) 범위로 좁혀 다시 시도해 주세요."
+                        ),
+                        mode="offline",
+                        tool_calls=tool_calls,
+                        citations=[],
+                        grounded=False,
                     ),
-                    mode="offline",
-                    tool_calls=tool_calls,
-                    citations=[],
-                    grounded=False,
+                    [],  # 회피 답변은 수치 클레임이 없어 자명하게 통과 — 그래야 정상
                 )
             answer = _format_search_answer(resolved, data)
-            return AgentResult(
-                answer=answer,
-                mode="offline",
-                tool_calls=tool_calls,
-                citations=_collect_citations(tool_calls, [data]),
-                grounded=True,
+            return _finalize(
+                AgentResult(
+                    answer=answer,
+                    mode="offline",
+                    tool_calls=tool_calls,
+                    citations=_collect_citations(tool_calls, [data]),
+                    grounded=True,
+                ),
+                [_stringify(data)],
             )
 
 
