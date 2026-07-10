@@ -52,7 +52,7 @@ flowchart TB
     AG -->|"키 있으면"| LLM["🧠 Claude API<br/>(tool-use 루프)"]
     AG -->|"키 없으면"| FB["오프라인 폴백<br/>(규칙 라우팅 + 근거 발췌)"]
 
-    AG -->|"답변+출처+도구트레이스<br/>+지연+PII마스킹 내역"| API --> U
+    AG -->|"답변+출처+도구트레이스<br/>+지연+PII마스킹+검증 결과"| API --> U
 ```
 
 **구조의 핵심 한 가지만 꼽으면**: 모델(에이전트)과 도구(RA 업무 시스템)가 **MCP 규격으로 분리**되어 있다는 점이다. 에이전트는 도구의 내부 구현을 모르고, 도구의 이름·설명(docstring)·입력 스키마만 보고 호출한다. 그래서 같은 MCP 서버를 Claude Desktop이나 Cursor 같은 다른 MCP 클라이언트에 그대로 연결할 수 있다(stdio 실행 지원: `python -m src.mcp_server.server`).
@@ -372,7 +372,7 @@ SeriousnessAcc/DeadlineAcc/CausalityAcc/ReportableAcc 1.000, 확정 코딩 P 1.0
 
 - **FastAPI + Pydantic**: `/chat`(질문→답변), `/health`(모드·인덱스·하이퍼파라미터 상태), `/api/deadlines`, `/`(챗 UI 서빙). 요청/응답 스키마를 Pydantic 모델(`ChatRequest`/`ChatResponse`)로 검증한다.
 - **lifespan 훅**에서 부팅 시 RAG 인덱스를 1회 구축한다(요청마다 재구축하지 않음).
-- 응답에는 답변 외에 `citations`(출처), `tool_calls`(어떤 MCP 도구를 어떤 인자로 불렀는지), `trace`(스텝별 지연·성패), `latency_ms`, `grounded`(근거 뒷받침 여부), `redactions`(PII 마스킹 유형·건수)가 실린다 → UI가 **출처·도구 트레이스·지연·마스킹 배지**를 그대로 보여줘 "왜 이 답인가"를 투명하게 만든다.
+- 응답에는 답변 외에 `citations`(출처), `tool_calls`(어떤 MCP 도구를 어떤 인자로 불렀는지), `trace`(스텝별 지연·성패), `latency_ms`, `grounded`(근거 뒷받침 여부), `redactions`(PII 마스킹 유형·건수), `verification`(사후 검증 결과 — 수치·날짜 대조, 폐지본 인용 점검)이 실린다 → UI가 **출처·도구 트레이스·지연·마스킹·검증 배지**를 그대로 보여줘 "왜 이 답인가"를 투명하게 만든다.
 
 ## 9. 관측성 (`src/observability.py`)
 
@@ -394,6 +394,7 @@ SeriousnessAcc/DeadlineAcc/CausalityAcc/ReportableAcc 1.000, 확정 코딩 P 1.0
 | `sweep.py` | **하이퍼파라미터 근거 재현** (스윕 + ablation) | rerank_weight·alpha·idf_power·섹션 prior의 결정 근거 |
 | `faithfulness.py` | **답변 신뢰성** (검색과 별개로 '최종 답변'을 평가) | AnswerGroundedness 1.0, CitationRate 0.969, AbstentionAccuracy 1.0, OverAbstain 0.0 |
 | `pv_eval.py` | **PV 워크플로** (라벨 22케이스) | 중대성·기한·인과성·코딩·보고요건 정확도 |
+| `verify_eval.py` | **답변 사후 검증기** (메타모픽: 정상 답변에 결정론적 변조를 가해 오류 합성) | SwapDetection·OffsetDetection·CleanPassRate·E2EPassRate |
 
 지표 정의(스스로 설명할 수 있어야 하는 것):
 - **Hit@1**: 정답 문서가 검색 1위인 비율. **MRR**: 정답 첫 등장 순위의 역수 평균(1위=1.0, 2위=0.5).
