@@ -263,3 +263,38 @@ async def test_agent_abstention_has_trivial_verification():
     r = await agent.chat("오늘 점심 메뉴 추천해줘")
     assert not r.grounded
     assert r.verification["ok"] and r.verification["checked"] == 0
+
+
+def test_korean_date_notation_matches_iso_evidence():
+    """한국어 날짜 표기("2026년 7월 25일")는 ISO 근거(2026-07-25)와 표기 정규화로
+    대조된다 — 정규화가 없으면 (1) 올바른 답변이 미확인 날짜 오탐을 받고,
+    (2) 날짜의 '25일' 성분이 기간 클레임으로 오추출된다."""
+    v = verify_answer(
+        "보고 기한은 2026년 7월 25일입니다.",
+        ['"deadline_date": "2026-07-25", "awareness_date": "2026-07-10"'],
+    )
+    assert v.ok, v.summary()
+    # 역방향(근거가 한국어 표기, 답변이 ISO)도 대칭으로 통과
+    v2 = verify_answer("보고 기한은 2026-07-25입니다.", ["마감일은 2026년 7월 25일이다"])
+    assert v2.ok, v2.summary()
+
+
+def test_korean_date_in_question_gets_premise_label():
+    """질문에 한국어 표기로 들어온 날짜를 답변이 ISO 로 재서술한 경우 —
+    '환각'이 아니라 '전제 확인 필요'(from_question)로 라벨링되어야 한다."""
+    v = verify_answer(
+        "2024-06-01 기준으로는 심사 기간 규정이 없습니다.",
+        ["심사 기간은 120 근무일"],
+        question="2024년 6월 1일 기준 심사 기간은?",
+    )
+    assert "2024-06-01" in v.question_origin
+
+
+def test_korean_date_component_not_extracted_as_duration():
+    """"7월 15일"의 '15일'이 기간 클레임으로 추출되면, 근거의 '15일 이내'(기간)와
+    우연히 일치해 통과하는 오염 경로가 생긴다 — 날짜 문맥은 날짜로만 읽는다."""
+    from src.verify.verifier import extract_claims
+
+    nums, dates = extract_claims("처리 시한은 2026년 7월 15일까지입니다")
+    assert ("15", "일") not in nums
+    assert "2026-07-15" in dates

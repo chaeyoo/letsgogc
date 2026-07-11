@@ -23,22 +23,14 @@ from .textutil import tokenize
 from .vectorstore import InMemoryVectorStore, Scored
 
 
-def _is_active(chunk: Chunk, as_of: str, include_superseded: bool) -> bool:
-    """버전 인지 필터: 이 청크를 현재 검색 대상으로 삼을지 판정한다.
-
-    - 폐지(superseded)된 문서는 기본 제외(이력 조회 시 include_superseded=True로 포함).
-    - as_of(기준일)가 주어지면 그 시점에 아직 시행되지 않은 문서는 제외
-      ("2024년 시점 기준 유효 규정" 같은 과거 시점 질의 지원).
-    """
-    if not include_superseded and chunk.status == "superseded":
-        return False
-    if as_of and chunk.effective_date:
-        try:
-            if _dt.date.fromisoformat(chunk.effective_date) > _dt.date.fromisoformat(as_of):
-                return False
-        except ValueError:
-            pass
-    return True
+def _parse_date(s: str) -> _dt.date | None:
+    """ISO 날짜 파싱 — 실패·공백은 None. 호출부가 fail-closed 로 처리한다."""
+    if not s:
+        return None
+    try:
+        return _dt.date.fromisoformat(s)
+    except ValueError:
+        return None
 
 
 class BM25Index:
@@ -145,6 +137,8 @@ class HybridRetriever:
         self._title_w: list[dict[str, float]] = []   # 제목 토큰별 가중(질의 무관 → 사전 계산)
         self._title_total: list[float] = []
         self._chunk_ix: dict[int, int] = {}
+        self._chunk_eff: list[_dt.date | None] = []      # 청크별 파싱된 시행일
+        self._doc_eff: dict[str, _dt.date | None] = {}   # doc_id → 시행일(as_of 구간 판정)
         self._max_idf = 1.0
 
     def index(self, chunks: list[Chunk]) -> None:
@@ -162,14 +156,52 @@ class HybridRetriever:
         ]
         self._title_total = [sum(w.values()) for w in self._title_w]
         self._chunk_ix = {id(c): i for i, c in enumerate(chunks)}
+        # 시행일은 인덱싱 시 1회 파싱해 둔다(질의마다 청크 수만큼 재파싱하지 않는다
+        # — 리랭커 캐시와 같은 이유). 해석 불가능한 날짜는 None 으로 보존해
+        # 시점(as_of) 조회에서 fail-closed 로 처리한다. doc 단위 맵은 폐지본의
+        # '당시 현행' 구간 [시행일, 후속본 시행일) 판정에서 후속본 조회용.
+        self._chunk_eff = [_parse_date(c.effective_date) for c in chunks]
+        self._doc_eff = {c.doc_id: _parse_date(c.effective_date) for c in chunks}
 
     def _candidate_indices(self, as_of: str, include_superseded: bool) -> list[int]:
-        """버전 인지 필터를 통과한 청크 인덱스만 반환(세 검색 모드 공통 후보군)."""
-        return [
-            i
-            for i, c in enumerate(self.store.chunks)
-            if _is_active(c, as_of, include_superseded)
-        ]
+        """버전 인지 필터를 통과한 청크 인덱스만 반환(세 검색 모드 공통 후보군).
+
+        - 폐지(superseded) 문서는 기본 제외(이력 조회 시 include_superseded=True 포함).
+        - as_of(기준일)가 주어지면 "그 시점에 시행 중이던 버전"을 반환한다:
+            · 그 시점에 아직 시행 전인 문서는 제외하고,
+            · **당시 시행 중이던 폐지본은 포함한다** — 폐지본이라도 시행일 ≤ as_of
+              < 후속본 시행일 구간이면 그때의 현행이다. '폐지본 기본 제외'를
+              as_of 에도 그대로 적용하면 개정된 적 있는 규정은 과거 시점 조회에서
+              신·구판이 모두 걸러져 **아무 버전도 안 나온다** — "시점 조회를
+              지원한다"는 주장이 정작 개정 이력이 있는(=시점 조회가 필요한)
+              규정에서만 무너지는 논리적 비약이었다.
+        - fail-closed: 시행일을 해석할 수 없는 청크(또는 후속본 시행일 미상)는
+          시점 조회에서 제외한다 — '언제부터 유효한지 모르는 문서'를 특정 시점의
+          현행으로 제시하지 않는다. 크래시도, 조용한 통과도 아니다: 데이터 결함
+          자체는 preflight(코퍼스 무결성)가 파일명과 함께 보고하고, 여기서는
+          그 결함이 검색 전체를 죽이거나(예외 전파) 오답에 섞이는(무필터 통과)
+          두 나쁜 방향을 모두 차단한다.
+
+        as_of 형식 오류는 여기서 즉시 ValueError 다 — 사용자 경로는 MCP 도구
+        경계(search_regulations)가 검증해 명시적 에러로 답하고, 직접 호출자
+        (eval·테스트)의 형식 오류는 조용히 무시하는 것보다 시끄럽게 깨지는 것이 옳다.
+        """
+        cutoff = _dt.date.fromisoformat(as_of) if as_of else None
+        out: list[int] = []
+        for i, c in enumerate(self.store.chunks):
+            if cutoff is None:
+                if c.status == "superseded" and not include_superseded:
+                    continue
+            else:
+                eff = self._chunk_eff[i]
+                if eff is None or eff > cutoff:
+                    continue  # 시행일 미상(fail-closed) 또는 그 시점에 시행 전
+                if c.status == "superseded" and not include_superseded:
+                    succ = self._doc_eff.get(c.superseded_by)
+                    if succ is None or succ <= cutoff:
+                        continue  # 후속본 시행일 미상이거나 이미 대체된 시점
+            out.append(i)
+        return out
 
     # ---- 벡터 단독 검색(버전 필터 공유; eval 비교·폴백용) ----
     def vector_search(

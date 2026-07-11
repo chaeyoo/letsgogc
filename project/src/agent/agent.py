@@ -113,20 +113,37 @@ def _collect_citations(tool_calls: list[ToolCall], raw_results: list[dict]) -> l
     return cites
 
 
-def _strip_query_echo(data: Any) -> Any:
-    """도구 출력에서 질의 에코 필드(query)를 재귀 제거한 사본을 만든다.
+_ECHO_KEYS = ("query", "as_of")  # 도구 출력에 에코되는 '사용자 입력' 필드
 
-    신뢰 소스는 '근거 문단 ∪ 도구 출력'인데, search 계열 도구는 받은 질의를
-    출력에 에코한다. 이를 그대로 신뢰하면 **사용자 질문 속 수치가 신뢰 소스로
-    승격**되어, 사용자가 틀린 수치를 전제로 물었을 때 모델이 맞장구쳐도
-    검증을 통과하는 구멍이 생긴다. 케이스 서술(case)은 남긴다 — 그것은
-    검증할 규정 클레임이 아니라 사용자가 제공한 '사실'이다.
+
+def _strip_query_echo(data: Any) -> Any:
+    """도구 출력에서 사용자 입력 에코 필드(query·as_of)를 재귀 제거한 사본을 만든다.
+
+    신뢰 소스는 '근거 문단 ∪ 도구 출력'인데, search 계열 도구는 받은 입력을
+    출력에 에코한다. 이를 그대로 신뢰하면 **사용자 입력 속 수치·날짜가 신뢰
+    소스로 승격**되어, 사용자가 틀린 값을 전제로 물었을 때 모델이 맞장구쳐도
+    검증을 통과하는 구멍이 생긴다. query 만 제거하고 as_of(기준일 에코)를
+    남기는 것은 같은 구멍을 반쪽만 막은 비대칭이었다 — 사용자가 지정한
+    기준일이 답변 날짜 클레임의 '근거'가 되어 버린다. 케이스 서술(case)은
+    남긴다 — 그것은 검증할 규정 클레임이 아니라 사용자가 제공한 '사실'이다.
     """
     if isinstance(data, dict):
-        return {k: _strip_query_echo(v) for k, v in data.items() if k != "query"}
+        return {k: _strip_query_echo(v) for k, v in data.items() if k not in _ECHO_KEYS}
     if isinstance(data, list):
         return [_strip_query_echo(v) for v in data]
     return data
+
+
+def _is_contract_error(data: Any) -> bool:
+    """도구의 명시적 에러 계약({"error", ...}) 응답인지 판정한다.
+
+    에러 계약은 에이전트의 자가 정정용 되먹임이지 **근거가 아니다** — 에러
+    문구에는 사용자 입력이 에코된다(예: "as_of '2024/06/01' 가 … 형식이 아님").
+    이를 신뢰 소스에 넣으면 잘못된 입력 값이 검증의 '근거'로 승격된다.
+    query·as_of 키만 걷어내는 필드 단위 접근으로는 못 막는 경로라(값이 error
+    문자열 안에 들어 있다), 에러 계약 응답은 통째로 신뢰 소스에서 제외한다.
+    """
+    return isinstance(data, dict) and "error" in data
 
 
 def _finalize(
@@ -214,7 +231,7 @@ class RaAgent:
                         ),
                         trusted_texts,
                         allow_superseded,
-                        question=message,
+                        question=_question_context(message, history),
                     )
 
                 # 도구 호출 실행
@@ -226,12 +243,16 @@ class RaAgent:
                     data, is_error = await self._safe_tool_call(
                         mcp_client, block.name, dict(block.input), trace
                     )
-                    if not is_error:
-                        # 도구 출력 = 검증 신뢰 소스. 단 질의 에코(query)는 제외 —
-                        # 사용자 전제가 신뢰 소스로 승격되는 구멍을 막는다.
+                    if not is_error and not _is_contract_error(data):
+                        # 도구 출력 = 검증 신뢰 소스. 단 입력 에코(query·as_of)와
+                        # 에러 계약 응답은 제외 — 사용자 전제가 신뢰 소스로
+                        # 승격되는 구멍을 막는다(에러 문구 속 에코 포함).
                         trusted_texts.append(_stringify(_strip_query_echo(data)))
                     if not is_error and isinstance(data, dict):
-                        if block.name == "search_regulations":
+                        if block.name == "search_regulations" and "results" in data:
+                            # 성공한 검색만 집계한다 — 형식 오류로 실패한 as_of
+                            # 호출이 allow_superseded 를 켜면, 시점 검색이 한 번도
+                            # 성공하지 않았는데 폐지본 인용 경고만 꺼진다.
                             raw_search_results.append(data)
                             if block.input.get("include_superseded") or block.input.get("as_of"):
                                 allow_superseded = True  # 이력 조회 의도 — 폐지본 인용은 결함 아님
@@ -266,7 +287,7 @@ class RaAgent:
                 ),
                 trusted_texts,
                 allow_superseded,
-                question=message,
+                question=_question_context(message, history),
             )
 
     async def _safe_tool_call(self, mcp_client, name: str, args: dict, trace: Trace):
@@ -337,21 +358,42 @@ class RaAgent:
                     question=resolved,
                 )
 
+            checklist_note = ""
             if intent == "checklist":
                 category = _guess_category(resolved)
                 args = {"category": category}
                 with timed(trace, "tool.get_submission_checklist", "tool", {"args": args}):
                     data = (await mcp_client.call_tool("get_submission_checklist", args)).data
                 tool_calls.append(ToolCall("get_submission_checklist", args, _summarize(data)))
-                answer = _format_checklist(data)
-                return _finalize(
-                    AgentResult(answer=answer, mode="offline", tool_calls=tool_calls),
-                    [_stringify(data)],
-                    question=resolved,
+                if "error" not in data:
+                    answer = _format_checklist(data)
+                    return _finalize(
+                        AgentResult(answer=answer, mode="offline", tool_calls=tool_calls),
+                        [_stringify(data)],
+                        question=resolved,
+                    )
+                # 카테고리 매칭 실패 — 엉뚱한 체크리스트를 자신 있게 내는 대신,
+                # 지원 목록을 안내하고 규정 검색으로 폴백한다. LLM 모드가
+                # error+available 을 되먹여 받아 자가 정정하는 것과 같은 계약을
+                # 오프라인 라우터도 따르는 것(계약을 라우터가 우회하지 않는다).
+                # 문구는 검색 결과를 약속하지 않는다 — 폴백 검색이 회피(abstention)로
+                # 끝나면 "아래는 검색 결과입니다 / 근거를 찾지 못했습니다"가 한 답변에
+                # 공존하는 자기모순이 된다(결과를 본 뒤에만 말할 수 있는 것을 미리
+                # 말하지 않는다).
+                available = ", ".join(data.get("available", []))
+                checklist_note = (
+                    f"※ 요청과 일치하는 체크리스트 유형을 찾지 못했습니다 (지원: {available}).\n\n"
                 )
 
-            # 기본: 규제문서 검색 후 근거 기반 답변
+            # 기본: 규제문서 검색 후 근거 기반 답변.
+            # 이력 조회 의도(예전/구판/개정 이력)를 감지하면 폐지본을 포함해 검색한다
+            # — "이력을 요청하면 구판도 노출"이라는 사용 계약이 LLM 모드(모델이
+            # include_superseded 를 스스로 지정)에서만 참이고 오프라인 라우터에는
+            # 그 경로 자체가 없던 불일치의 해소.
+            history_intent = any(k in resolved for k in _HISTORY_MARKERS)
             args = {"query": resolved, "top_n": 3}
+            if history_intent:
+                args["include_superseded"] = True
             with timed(trace, "tool.search_regulations", "tool", {"args": args}):
                 data = (await mcp_client.call_tool("search_regulations", args)).data
             tool_calls.append(ToolCall("search_regulations", args, _summarize(data)))
@@ -363,7 +405,8 @@ class RaAgent:
             if top_score < SCORE_FLOOR and coverage < COVERAGE_FLOOR:
                 return _finalize(
                     AgentResult(
-                        answer=(
+                        answer=checklist_note
+                        + (
                             "제공된 사내 규제문서에서 이 질문에 답할 근거를 찾지 못했습니다. "
                             "질문을 규제업무(허가·변경·GMP·라벨링·약물감시·임상) 범위로 좁혀 다시 시도해 주세요."
                         ),
@@ -375,7 +418,7 @@ class RaAgent:
                     [],  # 회피 답변은 수치 클레임이 없어 자명하게 통과 — 그래야 정상
                     question=resolved,
                 )
-            answer = _format_search_answer(data)
+            answer = checklist_note + _format_search_answer(data)
             return _finalize(
                 AgentResult(
                     answer=answer,
@@ -385,6 +428,7 @@ class RaAgent:
                     grounded=True,
                 ),
                 [_stringify(_strip_query_echo(data))],
+                allow_superseded=history_intent,  # 이력 조회에서 폐지본 인용은 결함이 아니라 목적
                 question=resolved,
             )
 
@@ -393,6 +437,14 @@ class RaAgent:
 # 보조 함수 (오프라인 포매팅 · 라우팅)
 # ---------------------------------------------------------------------------
 _FOLLOWUP_MARKERS = ("그건", "그거", "그럼", "그게", "이건", "위", "방금", "아까", "그 경우", "그 때")
+
+# 이력(폐지본 포함) 조회 의도 — **명시적 이력 요청 구문만** 좁게 잡는다.
+# 단독 "이력"은 현행 질문의 일상 어휘("접수·처리 이력 관리 요건")와, 단독
+# "폐지"는 현행 상태 질문("이 규정 폐지됐나요?")과 겹친다 — 이력 의도 오탐은
+# 폐지본을 검색에 섞을 뿐 아니라 allow_superseded 로 **버전 경고까지 끈다**.
+# 안전장치를 끄는 스위치의 오탐은 일반 라우팅 오탐보다 비싸므로, 확신 없는
+# 어휘는 넣지 않는다(코딩 사전과 같은 철학).
+_HISTORY_MARKERS = ("예전", "구판", "개정 이력", "개정 전", "이전 버전", "과거 규정", "당시 규정")
 
 
 def _redact_history(history: list[dict]) -> list[dict]:
@@ -407,19 +459,47 @@ def _redact_history(history: list[dict]) -> list[dict]:
     return out
 
 
-def _last_user_text(history: list[dict]) -> str:
-    """대화 이력에서 마지막 사용자 발화 텍스트를 추출(멀티턴 맥락 복원용)."""
-    for turn in reversed(history):
+def _user_texts(history: list[dict]) -> list[str]:
+    """대화 이력에서 사용자 발화 텍스트만 순서대로 추출한다."""
+    out: list[str] = []
+    for turn in history:
         if turn.get("role") != "user":
             continue
         content = turn.get("content", "")
         if isinstance(content, str):
-            return content
-        if isinstance(content, list):  # anthropic 블록 형식 대비
+            out.append(content)
+        elif isinstance(content, list):  # anthropic 블록 형식 대비
             parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
             if parts:
-                return " ".join(parts)
-    return ""
+                out.append(" ".join(parts))
+    return out
+
+
+def _last_user_text(history: list[dict]) -> str:
+    """대화 이력에서 마지막 사용자 발화 텍스트를 추출(멀티턴 맥락 복원용)."""
+    texts = _user_texts(history)
+    return texts[-1] if texts else ""
+
+
+def _question_context(message: str, history: list[dict]) -> str:
+    """검증의 from_question 라벨링용 질문 맥락 — 직전 사용자 발화까지만 포함한다.
+
+    LLM 모드 답변은 이전 턴의 전제("보고 기한이 30일 맞지?" → 다음 턴 "그럼
+    그 30일은…")를 이어받아 재서술할 수 있는데, 현재 턴 질문만 대조하면 그 값이
+    '환각' 경고로 라벨링된다 — 실제로 맞는 경고는 '전제 확인 필요'다(둘 다
+    경고는 붙는다 — 라벨은 경고의 종류를 조정할 뿐, 면제하지 않는다).
+
+    범위를 두 방향으로 제한한다:
+    - **사용자 발화만**: 어시스턴트의 이전 답변까지 넣으면 한 번 새어 나간
+      미확인 수치가 다음 턴부터 '전제'로 완화 라벨링되는 자기 강화 루프가 생긴다.
+    - **직전 턴까지만**(전체 이력 아님): 대화 전체를 누적하면 10턴 전 무관한
+      맥락의 수치("점유율 90%")가 이후 모든 환각을 '전제'로 완화 라벨링한다 —
+      완화 라벨의 면적은 실제 전제 이월이 일어나는 창(직전 턴, 오프라인
+      후속질문 병합과 같은 창)으로 최소화한다.
+    신뢰 소스(trusted_texts)에는 어느 쪽도 넣지 않는 것은 동일하다.
+    """
+    prev = _last_user_text(history)
+    return f"{prev}\n{message}" if prev else message
 
 
 def _resolve_followup(message: str, history: list[dict]) -> str:
@@ -490,12 +570,23 @@ def _route_intent(message: str) -> str:
 
 
 def _guess_category(message: str) -> str:
+    """체크리스트 카테고리 추측 — 확신 있는 신호가 있을 때만 답한다.
+
+    이전에는 아무 신호가 없어도 '품목허가'를 기본 추측으로 반환했다.
+    그러면 "GMP 체크리스트 줘" 같은 미지원 요청에 엉뚱한 품목허가 체크리스트가
+    자신 있게 나간다 — 도구에는 error+available 계약(조용한 빈 결과 금지)을
+    만들어 놓고, 라우터가 항상 유효한 카테고리를 추측해 그 계약을 우회하고
+    있었다(안전장치를 만든 층 아래에서 무력화하는 형태의 사각지대).
+    확신 없으면 "" 를 반환하고, 호출부가 지원 목록 안내 + 검색 폴백으로 처리한다.
+    """
     m = message
     if "변경" in m:
         return "변경허가"
     if any(k in m for k in ["안전", "이상사례", "부작용", "보고"]):
         return "안전성보고"
-    return "품목허가"
+    if any(k in m for k in ["품목허가", "허가", "신약", "신규"]):
+        return "품목허가"
+    return ""
 
 
 def _format_deadlines(data: dict) -> str:
@@ -510,8 +601,8 @@ def _format_deadlines(data: dict) -> str:
 
 
 def _format_checklist(data: dict) -> str:
-    if "error" in data:
-        return f"{data['error']}. 지원 항목: {', '.join(data['available'])}"
+    # 에러 계약은 호출부(_chat_offline)가 먼저 걸러 검색 폴백으로 처리한다 —
+    # 여기 도달하는 data 는 항상 정상 체크리스트다.
     lines = [f"[{data['category']}] 준비 체크리스트:", ""]
     lines += [f"{i}. {item}" for i, item in enumerate(data["items"], 1)]
     return "\n".join(lines)

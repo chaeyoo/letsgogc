@@ -60,7 +60,8 @@ def search_regulations(
 
     버전 인지: 폐지(superseded)된 구판은 기본 제외한다(현행 규정만 답하도록).
     과거 시점의 규정을 조회하려면 as_of(YYYY-MM-DD)를, 폐지본 이력까지 보려면
-    include_superseded=True 를 사용한다.
+    include_superseded=True 를 사용한다. as_of 시점 조회는 그 시점에 시행 중이던
+    버전을 반환한다 — 이후 개정으로 폐지된 버전이라도 당시 현행이었다면 포함된다.
 
     Args:
         query: 검색할 질문/키워드 (예: "중대한 이상사례 보고 기한").
@@ -70,7 +71,21 @@ def search_regulations(
 
     Returns:
         {"results": [{"text","title","source","section","version","effective_date","score"}...]} 형태.
+        as_of 가 YYYY-MM-DD 형식이 아니면 {"error", "expected"} — 형식 오류를
+        조용히 무시하고 현행 기준으로 답하면 사용자는 '그 시점 규정'을 받았다고
+        믿게 된다(자신 있는 오답). 명시적 에러라야 에이전트가 정정 재시도한다.
     """
+    if as_of:
+        try:
+            _dt.date.fromisoformat(as_of)
+        except ValueError:
+            # 에러 문구에 예시 '날짜'를 넣지 않는다 — 에러 응답이 어딘가에서
+            # 텍스트로 소비될 때 예시 날짜가 실제 날짜 클레임처럼 읽히는 것을
+            # 원천 차단(형식은 포맷 문자열로 충분히 전달된다).
+            return {
+                "error": f"as_of '{as_of}' 가 YYYY-MM-DD 형식이 아님",
+                "expected": "YYYY-MM-DD",
+            }
     ctx = _get_pipeline().retrieve(
         query,
         rerank_n=max(1, min(top_n, 5)),
@@ -150,7 +165,7 @@ def get_submission_checklist(category: str) -> dict:
     data = _load_ra_tasks()
     checklists = data["checklists"]
     if category not in checklists:
-        return {"error": f"'{category}' 체크리스트 없음", "available": list(checklists)}
+        return {"error": f"'{category or '(미지정)'}' 체크리스트 없음", "available": list(checklists)}
     return {"category": category, "items": checklists[category]}
 
 
