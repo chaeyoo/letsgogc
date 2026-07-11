@@ -155,6 +155,71 @@ def test_question_does_not_promote_claim_to_supported():
 
 
 # ---------------------------------------------------------------------------
+# 날짜 역할 대조 — 두 날짜가 모두 근거에 있어도 역할(기한↔인지일)이 뒤바뀌면 잡는다
+# ---------------------------------------------------------------------------
+_TOOL_OUT = '{"awareness_date": "2026-07-10", "deadline_date": "2026-07-25", "deadline_days": 15}'
+
+
+def test_role_swap_detected_even_when_both_dates_exist():
+    """존재 대조를 '정의상' 통과하는 변조 — 역할 라벨 대조 축의 존재 이유."""
+    v = verify_answer("보고 기한: 2026-07-10 (인지일 2026-07-25 기준)", [_TOOL_OUT])
+    assert not v.ok
+    assert "기한 2026-07-10" in v.role_conflicts and "인지일 2026-07-25" in v.role_conflicts
+    assert not v.unsupported  # 두 날짜 모두 신뢰 소스에 실존 — 존재 축은 통과
+    assert "날짜 역할" in warning_text(v)
+
+
+def test_correct_roles_pass():
+    v = verify_answer(
+        "보고 기한: 2026-07-25 (인지일 2026-07-10 기준, 15일 이내)", [_TOOL_OUT, "15일 이내"]
+    )
+    assert v.ok and not v.role_conflicts
+
+
+def test_role_check_needs_tool_labels():
+    """검색 근거만 있으면(역할 라벨 없음) 판단 근거가 없다 — 플래그하지 않는다."""
+    v = verify_answer("보고 기한은 2025-04-01 이후 적용", ["시행일 2025-04-01 명시"])
+    assert v.ok and not v.role_conflicts
+
+
+def test_role_keyword_must_be_adjacent():
+    """'기한 규정은 <날짜> 시행'처럼 키워드가 날짜에 직접 붙지 않으면 역할 주장이 아니다."""
+    v = verify_answer("기한 규정은 2026-07-10 시행 문서를 참조하세요", [_TOOL_OUT])
+    assert not v.role_conflicts
+
+
+def test_unsupported_date_near_keyword_is_existence_issue_not_role():
+    """근거에 아예 없는 날짜는 존재 대조 축이 잡는다 — 역할 축과 중복 경고하지 않는다."""
+    v = verify_answer("보고 기한: 2026-08-01", [_TOOL_OUT])
+    assert "2026-08-01" in v.unsupported and not v.role_conflicts
+
+
+# ---------------------------------------------------------------------------
+# 검증 게이트 운영 계기판 (경고율 집계 — alert fatigue 조기 신호)
+# ---------------------------------------------------------------------------
+def test_gate_stats_records_and_snapshots():
+    from src.observability import GateStats
+
+    gs = GateStats()
+    gs.record({"ok": True, "unsupported": []})
+    gs.record({"ok": False, "unsupported": ["30일"], "role_conflicts": ["기한 2026-07-10"]})
+    snap = gs.snapshot()
+    assert snap["responses"] == 2 and snap["warned"] == 1 and snap["warn_rate"] == 0.5
+    assert snap["by_axis"] == {"unsupported": 1, "role_conflicts": 1}
+
+
+@pytest.mark.asyncio
+async def test_agent_chat_feeds_gate_stats():
+    """모든 chat 응답이 계기판에 집계된다 — /health 노출의 데이터 소스."""
+    from src.observability import gate_stats
+
+    before = gate_stats.snapshot()["responses"]
+    r = await RaAgent().chat("신약 품목허가 심사 며칠 걸려?")
+    assert r.verification
+    assert gate_stats.snapshot()["responses"] == before + 1
+
+
+# ---------------------------------------------------------------------------
 # 인용 버전 점검 (폐지본 감지)
 # ---------------------------------------------------------------------------
 def test_superseded_citation_is_flagged():

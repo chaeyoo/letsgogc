@@ -140,6 +140,7 @@ function renderBot(bubble, data) {
       if (halluc.length) parts.push(`미확인 ${halluc.map(esc).join(', ')}`);
       if (qOrigin.size) parts.push(`질문 전제 확인 필요 ${[...qOrigin].map(esc).join(', ')}`);
       if ((v.direction_conflicts || []).length) parts.push(`방향 반대 ${v.direction_conflicts.map(esc).join(', ')}`);
+      if ((v.role_conflicts || []).length) parts.push(`날짜 역할 불일치 ${v.role_conflicts.map(esc).join(', ')}`);
       if ((v.superseded_cited || []).length) parts.push(`폐지본 인용 ${v.superseded_cited.map(esc).join(', ')}`);
       ver = `<span class="pill warn">🔍 검증 경고: ${parts.join(' · ')}</span>`;
     }

@@ -55,6 +55,73 @@ class Trace:
         return [s.to_dict() for s in self.spans]
 
 
+@dataclass
+class GateStats:
+    """검증 게이트 운영 계기판 — 프로세스 수명 동안의 경고율을 상시 집계한다.
+
+    검증 계층의 운영 리스크는 오탐 그 자체보다 **경고율의 추이**다: 경고가
+    잦아지면 담당자가 경고를 무시하기 시작하고(alert fatigue) 그 순간 계층
+    전체가 죽는다. 배치 후 이 신호를 볼 수단이 없으면 죽는 순간을 모른 채
+    지나간다 — 그래서 게이트 통과/경고를 축별로 세어 /health 에 노출한다
+    (FDE가 배치 다음 날 아침에 확인하는 계기판). 집계는 응답 단위다:
+    한 응답에 미확인 수치가 3개여도 unsupported 축 +1 — 계기판이 재는 것은
+    '경고가 붙은 응답의 비율'이지 클레임 개수가 아니다.
+
+    검증 결과는 응답 단위 감사 로그(JSON)로도 남는다 — 규제 도메인에서
+    "그 답변이 그때 검증을 통과했는가"는 사후 감사의 질문이기 때문이다.
+    답변 원문이 아니라 판정 요약만 남긴다(로그에 클레임 수치·판정만, PII 없음).
+    """
+    responses: int = 0
+    warned: int = 0
+    by_axis: dict[str, int] = field(default_factory=dict)
+
+    _AXES = ("unsupported", "direction_conflicts", "role_conflicts", "question_origin", "superseded_cited")
+
+    def record(self, summary: dict) -> None:
+        self.responses += 1
+        if not summary.get("ok", True):
+            self.warned += 1
+        for axis in self._AXES:
+            if summary.get(axis):
+                self.by_axis[axis] = self.by_axis.get(axis, 0) + 1
+
+    def snapshot(self) -> dict:
+        return {
+            "responses": self.responses,
+            "warned": self.warned,
+            "warn_rate": round(self.warned / self.responses, 4) if self.responses else 0.0,
+            "by_axis": dict(self.by_axis),
+        }
+
+    def reset(self) -> None:
+        self.responses = 0
+        self.warned = 0
+        self.by_axis = {}
+
+
+gate_stats = GateStats()
+
+
+def record_verification(summary: dict) -> None:
+    """검증 게이트 결과 1건을 계기판에 집계하고 감사 로그를 남긴다."""
+    gate_stats.record(summary)
+    logger.info(
+        "verification "
+        + json.dumps(
+            {
+                "ok": summary.get("ok"),
+                "checked": summary.get("checked"),
+                "unsupported": summary.get("unsupported"),
+                "direction_conflicts": summary.get("direction_conflicts"),
+                "role_conflicts": summary.get("role_conflicts"),
+                "question_origin": summary.get("question_origin"),
+                "superseded_cited": summary.get("superseded_cited"),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 @contextmanager
 def timed(trace: Trace, name: str, kind: str, detail: dict | None = None):
     """with 블록의 실행시간을 측정해 trace에 span으로 기록하고 구조화 로그를 남긴다.
