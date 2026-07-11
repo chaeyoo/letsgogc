@@ -66,7 +66,12 @@ _CANARY_AS_OF_DOC = "REG-013"
 # 바로 그 축에 걸려야 하고(다른 축에 우연히 걸린 통과는 통과가 아니다),
 # clean(정상) 케이스는 오탐 없이 통과해야 한다. 축 목록과 테이블의 커버리지가
 # 어긋나면 테스트(test_preflight)가 실패한다 — 새 축을 추가하면 자가 테스트도
-# 함께 추가하도록 구조로 강제한 것.
+# 함께 추가하도록 구조로 강제한 것. 경고 축뿐 아니라 **비경고 라벨 축**
+# (case_origin — 2계층 신뢰 소스의 케이스 유래 라벨)도 심어 본다: 라벨은
+# 경고와 달리 죽어도 아무 소리가 나지 않으므로(응답은 계속 ok) 자가 테스트가
+# 없으면 고장을 알 수 있는 신호 자체가 없다. 같은 이유로 한 축의 '표기 변형'
+# (고유어 방향·부분 날짜)도 대표 1건씩 태운다 — 축이 살아 있어도 특정 표기의
+# 수집이 죽으면 그 표기로만 오는 왜곡은 전부 조용히 통과한다.
 _GATE_TOOL_LABELED = '{"awareness_date": "2026-07-10", "deadline_date": "2026-07-25"}'
 _GATE_SELF_TESTS: tuple[dict, ...] = (
     {"name": "수치 존재·심은 오류", "answer": "보고 기한은 30일 이내입니다",
@@ -77,8 +82,26 @@ _GATE_SELF_TESTS: tuple[dict, ...] = (
      "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "unsupported"},
     {"name": "방향 한정어·심은 오류", "answer": "15일 이후에 보고하면 됩니다",
      "trusted": ["인지일로부터 15일 이내 신속보고"], "expect_ok": False, "axis": "direction_conflicts"},
+    {"name": "고유어 방향 한정어·심은 오류", "answer": "보름 이후에 보고하면 됩니다",
+     "trusted": ["인지일로부터 15일 이내 신속보고"], "expect_ok": False, "axis": "direction_conflicts"},
     {"name": "날짜 방향 한정어·심은 오류", "answer": "2026-07-25 이후에 제출하면 됩니다",
      "trusted": ["보완자료는 2026-07-25까지 제출한다"], "expect_ok": False, "axis": "direction_conflicts"},
+    {"name": "케이스 간섭 방향 한정어·심은 오류(2계층)",
+     "answer": "15일 이후에 보고하면 됩니다",
+     "trusted": ["인지일로부터 15일 이내 신속보고"],
+     "user_facts": ["환자가 복용 15일 이후 증상 발생"],
+     "expect_ok": False, "axis": "direction_conflicts"},
+    {"name": "부분 날짜 표기·심은 오류", "answer": "보고 기한은 7월 30일입니다",
+     "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "unsupported"},
+    {"name": "부분 날짜 표기·정상", "answer": "보고 기한은 7월 25일입니다",
+     "trusted": [_GATE_TOOL_LABELED], "expect_ok": True},
+    {"name": "연도 표기·정상", "answer": "기한 산정은 2026년 도구 계산 기준입니다",
+     "trusted": [_GATE_TOOL_LABELED], "expect_ok": True},
+    {"name": "케이스 유래 지지·정상 라벨(2계층)",
+     "answer": "케이스상 복용 기간은 30일입니다",
+     "trusted": ["보고 기한은 15일 이내"],
+     "user_facts": ["환자가 30일간 복용 후 두드러기 발생"],
+     "expect_ok": True, "label": "case_origin"},
     {"name": "날짜 역할 스왑·심은 오류", "answer": "보고 기한: 2026-07-10 (인지일 2026-07-25 기준)",
      "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "role_conflicts"},
     {"name": "날짜 역할·정상", "answer": "보고 기한: 2026-07-25 (인지일 2026-07-10 기준)",
@@ -264,11 +287,18 @@ def smoke_checks() -> list[str]:
             t.get("citations"),
             t.get("allow_superseded", False),
             question=t.get("question", ""),
+            user_fact_texts=t.get("user_facts"),
         )
         s = v.summary()
         if t["expect_ok"]:
             if not v.ok:
                 problems.append(f"검증 게이트 자가 테스트 실패[{t['name']}]: 정상 케이스에 오탐 — {s}")
+            elif t.get("label") and not s.get(t["label"]):
+                # 경고는 아니지만 붙어야 하는 등급 라벨(case_origin) — 라벨이
+                # 조용히 죽으면 사용자 서술 유래 지지가 규정 근거처럼 읽힌다.
+                problems.append(
+                    f"검증 게이트 자가 테스트 실패[{t['name']}]: 기대 라벨({t['label']})이 붙지 않았다 — {s}"
+                )
         elif v.ok:
             problems.append(f"검증 게이트 자가 테스트 실패[{t['name']}]: 심은 오류가 통과됨")
         elif not s.get(t["axis"]):

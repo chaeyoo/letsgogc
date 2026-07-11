@@ -30,6 +30,7 @@ _MIN_N = {
     "n_paraphrase": 1,
     "n_date": 6,
     "n_role": 4,
+    "n_partial": 6,
 }
 
 
@@ -51,6 +52,7 @@ def test_detection_axes_are_pinned_at_full(res):
     assert res["nat_detected"] == res["n_native"], "고유어 치환 탐지 회귀"
     assert res["date_detected"] == res["n_date"], "날짜 시프트 탐지 회귀"
     assert res["role_detected"] == res["n_role"], "날짜 역할 스왑 탐지 회귀"
+    assert res["partial_detected"] == res["n_partial"], "부분 날짜 시프트 탐지 회귀"
 
 
 def test_false_positive_axes_are_pinned_at_zero(res):
@@ -58,6 +60,7 @@ def test_false_positive_axes_are_pinned_at_zero(res):
     assert res["clean_pass"] == res["n_clean"], "근거 발췌 답변에 오탐 — 추출 비대칭 회귀"
     assert res["para_pass"] == res["n_paraphrase"], "동치 고유어 표기(보름=15일)에 오탐"
     assert res["date_clean"] == res["n_date"], "도구 계산 마감일 인용에 오탐"
+    assert res["partial_clean"] == res["n_partial"], "연도 없는 'M월 D일' 재서술에 오탐"
 
 
 def test_version_axes(res):

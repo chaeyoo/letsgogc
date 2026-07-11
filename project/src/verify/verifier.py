@@ -8,16 +8,23 @@
 그래서 **모든 응답에 대해 런타임으로 실행되는 결정론적 검증 계층**을 둔다:
 
   1. 수치 클레임 검증 — 답변에서 '숫자+단위'(15일, 6개월, 120 근무일, 90% …),
-     고유어 수량 표현(보름, 이틀, 한 달 …), 날짜(YYYY-MM-DD)를 추출해,
-     각각이 **신뢰 소스(trusted sources)** 안에 실제로 존재하는지 대조한다.
+     고유어 수량 표현(보름, 이틀, 한 달 …), 날짜(YYYY-MM-DD·"2026년 7월 25일"·
+     연도 없는 부분 표기 "7월 25일")를 추출해, 각각이 **신뢰 소스(trusted
+     sources)** 안에 실제로 존재하는지 대조한다. 부분 날짜는 월-일 접미로,
+     연도 단독 표기("2025년")는 완전한 날짜의 연도 성분으로 대조한다 — 둘 다
+     값이 같은 표기 변형이지 환산이 아니다(단위 엄격성과 충돌하지 않음).
   2. 방향 한정어 검증 — 수치가 근거에 있어도 **한정어의 방향이 뒤집히면**
      ("15일 이내" → "15일 이후") 별도 경고를 낸다. 방향 한정어는
      닫힌 어휘 집합(이내·이하·미만·까지 / 이상·이후·초과)이라 기계 검증이
      가능하다 — '관계 왜곡은 전부 LLM judge 몫'이라는 초기 경계 설정을
-     재심사해 결정론으로 끌어온 부분이다. 같은 검증을 **날짜에도 대칭
-     적용**한다("2026-07-25까지" → "2026-07-25 이후") — 방향 검증이 기간
-     표기에만 있고 날짜 표기에는 없으면, 같은 기한 왜곡이 표기에 따라
-     한쪽만 잡히는 축 간 비대칭(사각지대)이 된다.
+     재심사해 결정론으로 끌어온 부분이다. 같은 검증을 **날짜에도**
+     ("2026-07-25까지" → "2026-07-25 이후"), **고유어 수사에도**("보름 이후")
+     대칭 적용한다 — 방향 검증이 일부 표기에만 있으면, 같은 기한 왜곡이
+     표기에 따라 한쪽만 잡히는 축 간 비대칭(사각지대)이 된다. 방향·역할
+     충돌의 **판정 기준은 strict 계층(규정 근거·도구 출력)** 이다 — 케이스
+     서술까지 합쳐 판정하면 케이스의 "15일 이후 증상"이 규정의 "15일 이내"
+     방향 경고를 조용히 무력화한다(케이스에 같은 방향이 있으면 경고를 끄는
+     대신 from_case 라벨로 모호성을 가시화한다).
   3. 날짜 역할 검증 — 도구 출력에 날짜가 여러 개면(인지일·마감일·오늘)
      답변이 두 날짜의 **역할을 맞바꿔도**("보고 기한은 <인지일>입니다") 각
      날짜가 신뢰 소스에 존재하므로 존재 대조(1)는 통과한다. 결정론적 도구는
@@ -80,7 +87,12 @@ from dataclasses import dataclass, field
 # '주(週)'의 lookahead: LLM이 "15일"을 "약 2주"로 패러프레이즈하면 근거에 없는
 # 환산값이 생기고, 마감일 환산 오차는 그 자체가 리스크다.
 _UNIT_ALT = r"근무일|영업일|개월|주일|시간|일|년|주(?![가-힣])|회|세|%"
-_NUM_UNIT_RE = re.compile(rf"(\d+(?:\.\d+)?)\s*({_UNIT_ALT})")
+# 선행 룩비하인드 (?<![\d.\-]) : 날짜에 조사처럼 '일'이 붙은 표기("2026-07-25일이다")
+# 에서 '25일'이 기간 클레임으로 오추출되는 오염을 막는다 — 근거 쪽에서 오추출되면
+# 답변의 지어낸 '25일 기한'이 그 오염된 값에 지지되어 통과한다(한국어 날짜
+# 표기를 _normalize 로 접는 것과 같은 계열의 구멍인데, ISO+접미 표기는 정규화
+# 대상이 아니라 정규식 경계로 막아야 한다).
+_NUM_UNIT_RE = re.compile(rf"(?<![\d.\-])(\d+(?:\.\d+)?)\s*({_UNIT_ALT})")
 # 날짜 경계에 \b 를 쓰면 안 된다 — 한글도 \w 라서 "2026-07-25입니다"처럼 조사가
 # 바로 붙는(한국어에서 가장 흔한) 표기의 날짜가 통째로 추출을 벗어난다.
 # 검증 대칭성 덕에 조용히 지나가던 사각지대: 답변·근거 양쪽에서 똑같이 안
@@ -89,6 +101,18 @@ _NUM_UNIT_RE = re.compile(rf"(\d+(?:\.\d+)?)\s*({_UNIT_ALT})")
 _DATE_RE = re.compile(r"(?<![\d-])(\d{4}-\d{2}-\d{2})(?![\d-])")
 # 한국어 날짜 표기("2026년 7월 25일") — _normalize 에서 ISO 로 정규화한다.
 _KDATE_RE = re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+# 연도 없는 월-일 표기("7월 25일") — ISO 로 접을 수 없으므로 반복 날짜 표기
+# (ISO 8601 --MM-DD)로 정규화한다. 이 정규화가 없으면 **이중 결함**이 된다:
+# (1) '25일' 성분이 기간 클레임으로 오추출되어, 옳은 답변("기한은 7월 25일")에
+#     '25일 미확인' 오탐이 붙고(alert fatigue), 근거에 우연히 기간 '25일'이
+#     있으면 틀린 날짜가 그 값에 지지되어 통과한다(오염).
+# (2) 부분 날짜 클레임 자체는 아예 추출되지 않는다 — 수집되지 않는 클레임은
+#     검증 사각지대다(조용한 비검증은 통과처럼 보인다).
+# 검증은 월-일 접미(suffix) 대조로 한다: "--07-25" 는 신뢰 소스의 완전한 날짜
+# "2026-07-25" 의 월-일 성분과 값이 같은 **표기 변형**이다(환산 아님 — 연도
+# 성분을 지어내지 않으므로 단위 엄격성과 충돌하지 않는다).
+_PARTIAL_KDATE_RE = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+_PARTIAL_DATE_RE = re.compile(r"--(\d{2}-\d{2})(?![\d-])")
 # 범위 표기("15~30일")의 하한 — 주 정규식은 상한(30일)만 잡아 하한이 검증을
 # 벗어난다. 구분자에 '-'를 넣지 않는 이유: 날짜(2026-07-25)와 충돌한다.
 _RANGE_RE = re.compile(rf"(?<![\d.\-])(\d+(?:\.\d+)?)\s*[~∼〜–—]\s*\d+(?:\.\d+)?\s*({_UNIT_ALT})")
@@ -121,7 +145,15 @@ _NATIVE_RE = re.compile("|".join(sorted((re.escape(w) for w in _NATIVE_NUMERALS)
 _UPPER_WORDS = ("이내", "안에", "이하", "미만", "까지")
 _LOWER_WORDS = ("이상", "이후", "초과", "경과")
 _QUAL_RE = re.compile(
-    rf"(\d+(?:\.\d+)?)\s*({_UNIT_ALT})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
+    rf"(?<![\d.\-])(\d+(?:\.\d+)?)\s*({_UNIT_ALT})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
+)
+# 고유어 수사에 붙은 방향 한정어("보름 이내") — 존재 대조는 고유어를 canonical
+# (15, 일)로 접어 대칭 처리하면서 방향 대조는 숫자 표기(_QUAL_RE)에만 있으면,
+# "보름 이후"라는 방향 뒤집기가 존재 축(보름=15일, 근거에 실존)을 통과하고
+# 방향 축(숫자 없음, 미수집)도 지나친다 — 표기에 따라 같은 왜곡이 한쪽만
+# 잡히는 축 간 비대칭(날짜 방향 축을 추가했던 것과 동일한 원리의 사각지대).
+_NATIVE_QUAL_RE = re.compile(
+    rf"({_NATIVE_RE.pattern})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
 )
 # 날짜에 붙는 방향 한정어("2026-07-25까지" ↔ "2026-07-25 이후") — 방향 검증이
 # 수치에만 있고 날짜에는 없는 것은 축 간 비대칭이었다: 근거가 "…까지 제출"인
@@ -168,9 +200,20 @@ def _normalize(text: str) -> str:
     않는다. 답변·신뢰 소스·질문에 대칭 적용된다(모두 이 함수를 거친다).
     """
     text = re.sub(r"(?<=\d),(?=\d{3})", "", text)
-    return _KDATE_RE.sub(
+    text = _KDATE_RE.sub(
         lambda m: f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", text
     )
+
+    # 연도 없는 월-일 표기("7월 25일" → "--07-25"): 완전한 K-날짜를 먼저 접은 뒤
+    # 남은 부분 날짜만 잡는다. 달력상 불가능한 값(13월·32일)은 날짜가 아니므로
+    # 건드리지 않는다(그대로 두면 기간 클레임으로 추출·대조된다 — 보수적).
+    def _pd(m: re.Match[str]) -> str:
+        mm, dd = int(m.group(1)), int(m.group(2))
+        if not (1 <= mm <= 12 and 1 <= dd <= 31):
+            return m.group(0)
+        return f"--{mm:02d}-{dd:02d}"
+
+    return _PARTIAL_KDATE_RE.sub(_pd, text)
 
 
 @dataclass
@@ -285,13 +328,22 @@ def _numeric_forms(text: str) -> set[tuple[str, str]]:
 
 
 def _qualifier_map(text: str) -> dict[tuple[str, str], set[str]]:
-    """(값, 단위) → 그 수치에 붙어 등장한 방향 한정어 클래스 집합."""
+    """(값, 단위) → 그 수치에 붙어 등장한 방향 한정어 클래스 집합.
+
+    고유어 수사 표기("보름 이내")도 canonical (15, 일)로 접어 수집한다 —
+    존재 대조와 마찬가지로 방향 대조도 표기와 무관하게 대칭이어야 한다
+    (근거가 "보름 이내"라 쓰고 답변이 "15일 이후"라 써도, 그 반대여도 잡힌다).
+    """
     text = _normalize(text)
     out: dict[tuple[str, str], set[str]] = {}
     for m in _QUAL_RE.finditer(text):
         unit = "주" if m.group(2) == "주일" else m.group(2)
         key = (m.group(1).lstrip("0") or "0", unit)
         out.setdefault(key, set()).add(_qual_class(m.group(3)))
+    for m in _NATIVE_QUAL_RE.finditer(text):
+        cls = _qual_class(m.group(2))
+        for form in _NATIVE_NUMERALS[m.group(1)]:
+            out.setdefault(form, set()).add(cls)
     return out
 
 
@@ -311,6 +363,11 @@ def _date_qualifier_map(text: str) -> dict[str, set[str]]:
 def extract_claims(text: str) -> tuple[set[tuple[str, str]], set[str]]:
     """텍스트에서 (수치, 단위) 클레임 집합과 날짜 집합을 추출한다."""
     return _numeric_forms(text), set(_DATE_RE.findall(_normalize(text)))
+
+
+def _partial_dates(text: str) -> set[str]:
+    """연도 없는 월-일 표기의 접미(suffix, "MM-DD") 집합을 추출한다."""
+    return set(_PARTIAL_DATE_RE.findall(_normalize(text)))
 
 
 def _occurrences(answer: str) -> list[_Occurrence]:
@@ -336,6 +393,10 @@ def _occurrences(answer: str) -> list[_Occurrence]:
         _add(m.group(0), _NATIVE_NUMERALS[m.group(0)], "numeric")
     for d in _DATE_RE.findall(answer):
         _add(d, ((d, ""),), "date")
+    for suffix in _PARTIAL_DATE_RE.findall(answer):
+        mm, dd = suffix.split("-")
+        # 표시는 사람이 읽는 원 표기로 되돌린다("--07-25" → "7월 25일")
+        _add(f"{int(mm)}월 {int(dd)}일", ((suffix, ""),), "partial_date")
     return occs
 
 
@@ -343,6 +404,9 @@ def _snippet(trusted: str, form: tuple[str, str], kind: str, width: int = 34) ->
     """신뢰 소스에서 클레임이 등장한 위치의 스니펫 — 사람의 대조를 빠르게."""
     if kind == "date":
         pat = re.escape(form[0])
+    elif kind == "partial_date":
+        # 신뢰 소스의 완전한 날짜(YYYY-MM-DD) 또는 같은 부분 표기(--MM-DD)
+        pat = rf"\d{{4}}-{re.escape(form[0])}|--{re.escape(form[0])}"
     else:
         num, unit = form
         unit_pat = "주일?" if unit == "주" else re.escape(unit)
@@ -404,53 +468,106 @@ def verify_answer(
     src_nums, src_dates = extract_claims(trusted)
     # strict 계층(규정 근거·도구 출력)만의 클레임 — from_case 라벨의 기준선
     strict_nums, strict_dates = extract_claims(strict) if facts else (src_nums, src_dates)
-    src_quals = _qualifier_map(trusted)
+    # 부분 날짜(월-일) 접미 — 완전한 날짜의 월-일 성분도 지지 근거가 된다
+    src_partials = _partial_dates(trusted) | {d[5:] for d in src_dates}
+    strict_partials = (
+        (_partial_dates(strict) | {d[5:] for d in strict_dates}) if facts else src_partials
+    )
+    # 방향·역할 대조의 기준은 strict 계층이다 — 케이스 서술(facts)까지 합친
+    # 지도로 판정하면, 케이스의 "15일 이후 증상 발생"이 규정의 "15일 이내"
+    # 방향 뒤집기 경고를 **조용히 무력화**한다(존재 축에는 2계층을 만들어 놓고
+    # 방향 축은 단층으로 둔 비대칭). 반대로 케이스에만 있는 한정어가 충돌을
+    # '만들어내는' 경로도 함께 사라진다(규정 근거 없는 판정 금지 — 보수성).
+    strict_quals = _qualifier_map(strict)
+    facts_quals = _qualifier_map(facts) if facts else {}
     q_nums, q_dates = extract_claims(question) if question else (set(), set())
+    q_partials = (_partial_dates(question) | {d[5:] for d in q_dates}) if question else set()
 
     for occ in _occurrences(answer):
+        kind = occ.kind
         if occ.kind == "date":
             supported = occ.display in src_dates
             from_q = (not supported) and occ.display in q_dates
             from_case = supported and occ.display not in strict_dates
             evidence = _snippet(trusted, (occ.display, ""), "date") if supported else ""
+        elif occ.kind == "partial_date":
+            # 부분 날짜(연도 없음)는 월-일 접미로 대조한다 — 완전한 날짜의
+            # 성분 재서술은 값이 같은 표기 변형이지 환산이 아니다. 외부
+            # 계약(kind)은 "date" 로 노출한다(부분/완전은 표기의 차이).
+            suffix = occ.forms[0][0]
+            supported = suffix in src_partials
+            from_q = (not supported) and suffix in q_partials
+            from_case = supported and suffix not in strict_partials
+            evidence = _snippet(trusted, (suffix, ""), "partial_date") if supported else ""
+            kind = "date"
         else:
             hit = next((f for f in occ.forms if f in src_nums), None)
             supported = hit is not None
-            from_q = (not supported) and any(f in q_nums for f in occ.forms)
-            from_case = supported and not any(f in strict_nums for f in occ.forms)
             evidence = _snippet(trusted, hit, "numeric") if hit else ""
+            from_case = supported and not any(f in strict_nums for f in occ.forms)
+            if not supported:
+                # 연도 단독 표기("2025년"): 신뢰 소스의 완전한 날짜(2025-04-01)의
+                # 연도 성분과 값이 같으면 지지로 본다 — 표기 변형이지 환산이
+                # 아니다. 이 폴백이 없으면 근거가 날짜로만 말하는 연도를 언급한
+                # 옳은 답변마다 '미확인 수치' 오탐이 붙는다(alert fatigue 경로).
+                num, unit = occ.forms[0]
+                if unit == "년" and re.fullmatch(r"(19|20)\d{2}", num):
+                    year_date = next((d for d in src_dates if d.startswith(num + "-")), "")
+                    if year_date:
+                        supported = True
+                        evidence = _snippet(trusted, (year_date, ""), "date")
+                        from_case = not (
+                            (num, "년") in strict_nums
+                            or any(d.startswith(num + "-") for d in strict_dates)
+                        )
+            from_q = (not supported) and any(f in q_nums for f in occ.forms)
         result.checks.append(
             ClaimCheck(
-                occ.display, occ.kind, supported,
+                occ.display, kind, supported,
                 evidence=evidence, from_question=from_q, from_case=from_case,
             )
         )
 
     # 방향 한정어 대조 — 수치가 지원된 클레임에 한해, 답변의 한정어 방향이
-    # 신뢰 소스와 뒤집혔는지 본다. 신뢰 소스에 한정어 없이 값만 있으면
-    # 판단 근거가 없으므로 플래그하지 않는다(보수적 — 오탐 방지).
+    # strict 계층(규정 근거·도구 출력)과 뒤집혔는지 본다. strict 에 한정어
+    # 없이 값만 있으면 판단 근거가 없으므로 플래그하지 않는다(보수적 — 오탐
+    # 방지). 답변의 방향 표현이 케이스 서술(facts)에는 존재하면 — 케이스
+    # 재서술("복용 15일 이후 증상")일 수도, 규정 왜곡일 수도 있다 — 기계는
+    # 구분할 수 없으므로 경고를 끄는 대신 from_case 라벨로 그 모호성을
+    # 가시화한다(존재 축의 2계층 설계와 같은 원리: 차단도 침묵도 아닌 라벨).
+    norm_answer = _normalize(answer)
     seen_dir: set[str] = set()
-    for m in _QUAL_RE.finditer(_normalize(answer)):
+    # (허용 canonical 형태들, 한정어 단어, 표시용 표기) — 숫자 표기 + 고유어 표기
+    answer_quals: list[tuple[tuple[tuple[str, str], ...], str, str]] = []
+    for m in _QUAL_RE.finditer(norm_answer):
         unit = "주" if m.group(2) == "주일" else m.group(2)
         key = (m.group(1).lstrip("0") or "0", unit)
-        if key not in src_nums:
+        answer_quals.append(((key,), m.group(3), f"{key[0]}{key[1]}"))
+    for m in _NATIVE_QUAL_RE.finditer(norm_answer):
+        answer_quals.append((_NATIVE_NUMERALS[m.group(1)], m.group(2), m.group(1)))
+    for forms, qual_word, base in answer_quals:
+        key = next((f for f in forms if f in src_nums), None)
+        if key is None:
             continue  # 값 자체가 미확인 — 위에서 이미 unsupported 로 잡혔다
-        cls = _qual_class(m.group(3))
-        trusted_cls = src_quals.get(key, set())
-        if cls not in trusted_cls and _OPPOSITE[cls] in trusted_cls:
-            display = f"{key[0]}{key[1]} {m.group(3)}"
+        cls = _qual_class(qual_word)
+        strict_cls = set().union(*(strict_quals.get(f, set()) for f in forms))
+        if cls not in strict_cls and _OPPOSITE[cls] in strict_cls:
+            display = f"{base} {qual_word}"
             if display in seen_dir:
                 continue
             seen_dir.add(display)
+            in_facts = any(cls in facts_quals.get(f, set()) for f in forms)
             result.checks.append(
-                ClaimCheck(display, "direction", False, evidence=_snippet(trusted, key, "numeric"))
+                ClaimCheck(display, "direction", False,
+                           evidence=_snippet(trusted, key, "numeric"), from_case=in_facts)
             )
 
     # 날짜 방향 한정어 대조 — 존재 대조를 통과한 날짜에 한해, 답변의 한정어
-    # 방향("2026-07-25까지" ↔ "이후")이 근거와 뒤집혔는지 본다. 수치 방향
-    # 대조와 같은 보수 규칙: 근거에 그 날짜의 한정어가 없으면 판단하지 않는다.
-    norm_answer = _normalize(answer)
-    src_date_quals = _date_qualifier_map(trusted)
+    # 방향("2026-07-25까지" ↔ "이후")이 strict 계층과 뒤집혔는지 본다. 수치
+    # 방향 대조와 같은 규칙: strict 에 그 날짜의 한정어가 없으면 판단하지
+    # 않고(보수성), 케이스 서술에 같은 방향이 있으면 from_case 로 가시화한다.
+    src_date_quals = _date_qualifier_map(strict)
+    facts_date_quals = _date_qualifier_map(facts) if facts else {}
     for m in _DATE_QUAL_RE.finditer(norm_answer):
         d = m.group(1)
         if d not in src_dates:
@@ -463,7 +580,9 @@ def verify_answer(
                 continue
             seen_dir.add(display)
             result.checks.append(
-                ClaimCheck(display, "direction", False, evidence=_snippet(trusted, (d, ""), "date"))
+                ClaimCheck(display, "direction", False,
+                           evidence=_snippet(trusted, (d, ""), "date"),
+                           from_case=cls in facts_date_quals.get(d, set()))
             )
 
     # 날짜 역할 대조 — 존재 대조를 통과한 날짜에 한해, 답변이 그 날짜에 부여한
@@ -472,7 +591,10 @@ def verify_answer(
     # 근거가 없으므로 플래그하지 않는다(보수적 — 오탐 방지).
     seen_role: set[str] = set()
     for role, answer_re in _ROLE_ANSWER_RE.items():
-        labels = set(_ROLE_LABEL_RE[role].findall(trusted))
+        # 역할 라벨은 strict 계층에서만 수집한다 — 라벨은 결정론적 도구의 JSON
+        # 직렬화 키에서 오므로 케이스 서술에 있을 수 없지만, '판정 기준은
+        # strict'라는 방향·역할 축의 공통 규칙을 코드에서도 동일하게 지킨다.
+        labels = set(_ROLE_LABEL_RE[role].findall(strict))
         if not labels:
             continue
         for m in answer_re.finditer(norm_answer):
@@ -504,7 +626,7 @@ def warning_text(v: VerificationResult) -> str:
     hallucinated = [c for c in v.unsupported if c not in q_origin]
     if hallucinated:
         parts.append(
-            "⚠ 자동 검증 경고: 답변 속 수치 "
+            "⚠ 자동 검증 경고: 답변 속 수치·날짜 "
             + ", ".join(f"'{c}'" for c in hallucinated)
             + " 이(가) 검색 근거·도구 결과에서 확인되지 않았습니다. "
             "제출·회신 전 규정 원문 대조가 필요합니다."
@@ -517,10 +639,16 @@ def warning_text(v: VerificationResult) -> str:
             "답변이 이를 정정하는 맥락인지 포함해 질문의 전제 자체를 규정 원문과 대조하세요."
         )
     for c in (x for x in v.checks if x.kind == "direction"):
+        note = (
+            " 케이스 서술에는 같은 방향 표현이 있어 재서술일 수 있으나, 규정"
+            " 근거와는 방향이 반대입니다 — 어느 쪽인지 확인이 필요합니다."
+            if c.from_case
+            else " 기한·범위의 방향이 뒤집히면 수치가 맞아도 컴플라이언스 오류입니다."
+        )
         parts.append(
             f"⚠ 방향 한정어 경고: 답변의 '{c.claim}' 은(는) 근거와 방향이 반대입니다"
             + (f" (근거: \"…{c.evidence}…\")" if c.evidence else "")
-            + ". 기한·범위의 방향이 뒤집히면 수치가 맞아도 컴플라이언스 오류입니다."
+            + "." + note
         )
     for c in (x for x in v.checks if x.kind == "role"):
         role, date = c.claim.split(" ", 1)
