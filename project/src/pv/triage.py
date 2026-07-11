@@ -73,6 +73,7 @@ def assess_case(case_text: str, awareness_date: str = "") -> TriageResult:
     Args:
         case_text: 이상사례 케이스 서술(자유 텍스트).
         awareness_date: 회사가 케이스를 인지한 날(YYYY-MM-DD). 없으면 오늘.
+            형식이 잘못되면 오늘로 폴백하되 caveat 로 명시한다(조용한 폴백 금지).
 
     판정 규칙(REG-005 §2):
       - 사망·생명위협           → 지체 없이(신속보고, D+0)
@@ -81,14 +82,22 @@ def assess_case(case_text: str, awareness_date: str = "") -> TriageResult:
     예상 여부를 판별할 수 없으면 '예상치 못한 사례'로 보수적으로 취급한다
     (기한을 놓치는 쪽보다 이르게 잡는 쪽이 안전한 실패).
     """
+    # 인지일 형식 오류는 '조용히' 오늘로 대체하지 않는다 — 보고기한이 잘못된
+    # 기준일로 계산되는 것은 컴플라이언스 리스크인데, 폴백이 조용하면 사용자는
+    # 기한이 틀렸다는 신호를 받을 길이 없다(시끄러운 실패 원칙).
+    caveats: list[str] = []
     try:
         aware = _dt.date.fromisoformat(awareness_date) if awareness_date else _dt.date.today()
     except ValueError:
         aware = _dt.date.today()
+        caveats.append(
+            f"인지일 '{awareness_date}' 이(가) YYYY-MM-DD 형식이 아니어서 "
+            f"오늘({aware.isoformat()}) 기준으로 기한을 계산했습니다. "
+            "실제 인지일로 기한 재계산이 필요합니다."
+        )
 
     criteria = _detect_criteria(case_text)
     expectedness = _detect_expectedness(case_text)
-    caveats: list[str] = []
 
     if not criteria:
         return TriageResult(
@@ -100,7 +109,7 @@ def assess_case(case_text: str, awareness_date: str = "") -> TriageResult:
             awareness_date=aware.isoformat(),
             deadline_date=None,
             rationale="케이스 서술에서 중대성(Serious) 기준(사망·생명위협·입원·장애·기형 등)이 감지되지 않았다.",
-            caveats=["규칙 기반 1차 분류입니다. 최종 중대성 판단은 PV 담당자가 확정해야 합니다."],
+            caveats=[*caveats, "규칙 기반 1차 분류입니다. 최종 중대성 판단은 PV 담당자가 확정해야 합니다."],
         )
 
     if _IMMEDIATE & set(criteria):

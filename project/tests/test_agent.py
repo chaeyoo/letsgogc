@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from src.agent.agent import RaAgent
-from src.observability import Trace
+from src.observability import Span, Trace
 
 
 @pytest.mark.asyncio
@@ -59,6 +59,23 @@ async def test_trace_is_populated():
     assert r.trace, "트레이스 span 이 기록되어야 함"
     assert r.latency_ms > 0
     assert any(s["kind"] == "tool" for s in r.trace)
+    # 총 지연은 최상위 agent span 의 wall-clock 이다 — 스텝 span 까지 합산하면
+    # 같은 시간이 두 번 세어져 계기판이 ~2배 지연을 보고한다(관측 왜곡 회귀 가드)
+    agent_span = next(s for s in r.trace if s["kind"] == "agent")
+    assert r.latency_ms == agent_span["ms"]
+
+
+def test_latency_is_wall_clock_not_span_sum():
+    """Trace.total_ms — 중첩 span 합산이 아니라 최상위 span 의 wall-clock."""
+    trace = Trace()
+    trace.add(Span(name="tool.search", kind="tool", duration_ms=80.0))
+    trace.add(Span(name="chat", kind="agent", duration_ms=100.0))
+    assert trace.total_ms == 100.0  # 180(합산)이 아니라 100(wall-clock)
+    # 최상위 span 이 없는 부분 트레이스는 합산으로 폴백
+    partial = Trace()
+    partial.add(Span(name="tool.a", kind="tool", duration_ms=30.0))
+    partial.add(Span(name="tool.b", kind="tool", duration_ms=20.0))
+    assert partial.total_ms == 50.0
 
 
 class _FailingClient:

@@ -49,6 +49,17 @@ class Trace:
 
     @property
     def total_ms(self) -> float:
+        """요청 총 지연(wall-clock).
+
+        스텝 span(tool·llm)은 최상위 agent span '안에서' 실행되므로 전부
+        합산하면 같은 시간이 두 번 세어진다 — 계기판이 실제의 ~2배 지연을
+        보고하면 SLA 판단·병목 진단이 함께 틀린다(관측이 틀리면 관측이 없는
+        것보다 나쁘다). 그래서 최상위 agent span 이 있으면 그 wall-clock 을
+        쓰고, 없으면(부분 트레이스) 합산으로 폴백한다.
+        """
+        for s in self.spans:
+            if s.kind == "agent":
+                return round(s.duration_ms, 2)
         return round(sum(s.duration_ms for s in self.spans), 2)
 
     def to_list(self) -> list[dict]:

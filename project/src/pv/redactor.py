@@ -61,6 +61,20 @@ class RedactionReport:
         return [{"type": t, "count": c} for t, c in self.counts.items()]
 
 
+def merged_summary(*reports: RedactionReport) -> list[dict]:
+    """여러 입력 필드의 마스킹 리포트를 유형별 합산 요약으로 합친다.
+
+    도구의 자유 텍스트 인자가 여러 개면(케이스 서술·보고자·환자 정보) 각각을
+    마스킹하되, 사용자에게 보이는 리포트는 하나여야 한다 — 필드별로 흩어지면
+    "무엇이 마스킹됐는가"의 감사가 어려워진다.
+    """
+    counts: dict[str, int] = {}
+    for rep in reports:
+        for kind, n in rep.counts.items():
+            counts[kind] = counts.get(kind, 0) + n
+    return [{"type": t, "count": c} for t, c in counts.items()]
+
+
 def redact(text: str) -> RedactionReport:
     """텍스트에서 PII 를 마스킹하고 유형별 건수를 보고한다."""
     counts: dict[str, int] = {}
