@@ -32,6 +32,17 @@
     ("기한은 <인지일>입니다 (인지일 <마감일>)"). 두 날짜 모두 신뢰 소스에
     실존하므로 존재 대조만으로는 **정의상 통과**하는 변조 — v2까지의
     사각지대였고, v3의 역할 라벨 대조 축이 잡아야 한다.
+  - 부분 날짜 시프트(partial date shift): 마감일을 연도 없는 "M월 D일"
+    표기로 재서술한 답변에서 월-일을 밀어 바꾼다. v4까지는 부분 날짜가
+    기간('25일')으로 오추출되어 옳은 재서술에 오탐이 붙고, 부분 날짜
+    클레임 자체는 추출되지 않아 측정이 불가능했다 — clean(재서술 통과)과
+    corrupt(시프트 탐지) 양방향을 함께 측정한다.
+
+측정하지 않는 것(경계의 명시): 고유어 방향 뒤집기("보름 이후")와 케이스
+간섭 방향 축은 이 스크립트가 아니라 preflight 자가 테스트와 단위 테스트가
+고정한다 — 코퍼스 발췌 기반 변조로는 해당 표기의 표본이 안정적으로
+만들어지지 않기 때문이다(표본 0~1의 축을 eval 지표로 두면 '측정이 조용히
+수축하는' 실패와 구분되지 않는다).
 
 지표 해석의 규율 — '핀'과 '실측'을 구분해 읽는다:
   탐지율(Swap/Offset/Direction/Native/DateShift)은 '근거에 없는 값·방향'으로
@@ -246,8 +257,13 @@ def evaluate() -> dict:
     # (5) 날짜 역할 스왑 — 인지일↔마감일을 맞바꾼다. 두 날짜 모두 신뢰 소스에
     # 실존하므로 존재 대조는 정의상 통과한다 — 역할 라벨 대조 축의 몫.
     # (즉시보고 케이스는 마감일=인지일이라 스왑이 항등이 되어 표본에서 제외)
+    # (6) 부분 날짜 표기 — 마감일을 연도 없이 "7월 25일"로 재서술한 답변은
+    # 통과해야 하고(오탐 감시 — 종전에는 '25일' 성분이 기간 클레임으로
+    # 오추출되어 옳은 답변에 오탐이 붙었다), 틀린 부분 날짜는 잡혀야 한다
+    # (종전에는 부분 날짜 클레임이 아예 추출되지 않아 측정 자체가 없던 축).
     date_n = date_detected = date_clean = 0
     role_n = role_detected = 0
+    partial_n = partial_detected = partial_clean = 0
     for case in _load_items("pv_dataset.json"):
         tool_out = assess_adverse_event(case["case"], awareness_date=_AWARENESS_DATE)
         deadline = tool_out.get("deadline_date")
@@ -269,6 +285,14 @@ def evaluate() -> dict:
             role_n += 1
             if not verify_answer(swapped, trusted, user_fact_texts=facts).ok:
                 role_detected += 1
+        # 부분 날짜 축: 같은 마감일의 "M월 D일" 재서술(clean) vs 시프트(corrupt)
+        good_partial = f"이 케이스의 보고 기한은 {int(deadline[5:7])}월 {int(deadline[8:10])}일 입니다."
+        bad_partial = f"이 케이스의 보고 기한은 {int(shifted[5:7])}월 {int(shifted[8:10])}일 입니다."
+        if verify_answer(good_partial, trusted, user_fact_texts=facts).ok:
+            partial_clean += 1
+        partial_n += 1
+        if not verify_answer(bad_partial, trusted, user_fact_texts=facts).ok:
+            partial_detected += 1
 
     return {
         "n_clean": clean_n, "clean_pass": clean_pass,
@@ -279,6 +303,7 @@ def evaluate() -> dict:
         "n_paraphrase": para_n, "para_pass": para_pass,
         "n_date": date_n, "date_detected": date_detected, "date_clean": date_clean,
         "n_role": role_n, "role_detected": role_detected,
+        "n_partial": partial_n, "partial_detected": partial_detected, "partial_clean": partial_clean,
         "SupersededFlagged": superseded_flagged,
         "HistoryModeAllowed": history_allowed,
         "no_claim_items": no_claim_items,
@@ -323,6 +348,7 @@ def main() -> None:
     print(row("CleanPassRate       (근거 발췌 답변 통과)        ", res["clean_pass"], res["n_clean"]))
     print(row("ParaphrasePassRate  (동치 고유어 표기: 15일=보름) ", res["para_pass"], res["n_paraphrase"]))
     print(row("DateCleanPassRate   (도구 계산 마감일 인용 통과)  ", res["date_clean"], res["n_date"]))
+    print(row("PartialDatePassRate (연도 없는 'M월 D일' 재서술)  ", res["partial_clean"], res["n_partial"]))
     print("— 탐지(잡아야 정상) —")
     print(row("SwapDetection       (교차문서 수치 치환)          ", res["swap_detected"], res["n_swap"]))
     print(row("OffsetDetection     (오프셋 변조 15일→22일)       ", res["off_detected"], res["n_offset"]))
@@ -330,6 +356,7 @@ def main() -> None:
     print(row("NativeSwapDetection (고유어 치환 15일→열흘)       ", res["nat_detected"], res["n_native"]))
     print(row("DateShiftDetection  (마감일 시프트 +3일)          ", res["date_detected"], res["n_date"]))
     print(row("DateRoleSwapDetection(인지일↔마감일 역할 스왑)     ", res["role_detected"], res["n_role"]))
+    print(row("PartialDateDetection(연도 없는 부분 날짜 시프트)   ", res["partial_detected"], res["n_partial"]))
     print(f"폐지본 인용 감지: {'✓' if res['SupersededFlagged'] else '✗ 실패'}"
           f" · 이력 조회 모드 허용: {'✓' if res['HistoryModeAllowed'] else '✗ 실패'}")
     print("— 운영 경로 실측 —")
@@ -337,7 +364,7 @@ def main() -> None:
     for f in e2e["failures"]:
         print(f"  - E2E 실패: {f}")
     print("-" * 70)
-    print("해석: 탐지율 6축은 '근거에 없는 값·방향·역할'로 합성한 변조라 1.0이 정상이며,")
+    print("해석: 탐지율 7축은 '근거에 없는 값·방향·역할'로 합성한 변조라 1.0이 정상이며,")
     print("      깨지는 순간이 곧 검증기(클레임 추출·대조) 회귀다 — 회귀 고정 핀.")
     print("      CleanPassRate 도 절반은 구성적이다(발췌⊆신뢰 소스): 잡는 것은 답변/근거")
     print("      추출의 비대칭 회귀다. 구성이 개입하지 않는 실측은 E2EPassRate —")

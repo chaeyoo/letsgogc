@@ -95,6 +95,17 @@ def assess_case(case_text: str, awareness_date: str = "") -> TriageResult:
             f"오늘({aware.isoformat()}) 기준으로 기한을 계산했습니다. "
             "실제 인지일로 기한 재계산이 필요합니다."
         )
+    # 형식은 유효해도 '오늘보다 미래'인 인지일은 오타(연도·월 뒤바뀜)일 가능성이
+    # 높다 — 형식 검사만 하고 타당성(plausibility)은 안 보면, 2027 로 잘못 친
+    # 인지일이 기한을 1년 뒤로 조용히 밀어도 아무 신호가 없다(형식 오류에는
+    # 시끄러운 caveat 를 달아 놓고 값 오류는 조용히 통과시키는 비대칭).
+    # 계산은 입력값대로 수행한다 — 자동 정정은 또 다른 조용한 폴백이다.
+    if aware > _dt.date.today():
+        caveats.append(
+            f"인지일 {aware.isoformat()} 이(가) 오늘 이후의 미래 날짜입니다 — "
+            "입력 오류(연도·월 오타)일 수 있으니 실제 인지일을 확인하세요. "
+            "기한은 입력된 값 기준으로 계산되어 있습니다."
+        )
 
     criteria = _detect_criteria(case_text)
     expectedness = _detect_expectedness(case_text)

@@ -408,3 +408,145 @@ def test_korean_date_component_not_extracted_as_duration():
     nums, dates = extract_claims("처리 시한은 2026년 7월 15일까지입니다")
     assert ("15", "일") not in nums
     assert "2026-07-15" in dates
+
+
+# ---------------------------------------------------------------------------
+# v5 — 표기 사각지대: 고유어 방향 · 부분 날짜 · 연도 표기 · ISO+'일' 접미 오염
+# ---------------------------------------------------------------------------
+def test_native_numeral_direction_flip_is_flagged():
+    """"보름 이후"는 존재 축(보름=15일, 근거 실존)을 통과한다 — 방향 수집이
+    숫자 표기에만 있으면 같은 왜곡이 표기에 따라 한쪽만 잡히는 축 간 비대칭."""
+    v = verify_answer("보고는 보름 이후에 하면 됩니다.", ["인지일로부터 15일 이내 신속보고"])
+    assert not v.ok and "보름 이후" in v.direction_conflicts
+
+
+def test_native_numeral_direction_same_class_passes():
+    """"보름 이내"(=15일 이내)는 근거와 같은 방향 — 오탐하지 않는다."""
+    v = verify_answer("보름 이내에 보고합니다.", ["인지일로부터 15일 이내 신속보고"])
+    assert v.ok
+
+
+def test_source_native_qualifier_checks_digit_answer():
+    """근거가 "보름 이내"라 쓰고 답변이 "15일 이후"라 써도 대칭으로 잡힌다."""
+    v = verify_answer("15일 이후에 보고하면 됩니다.", ["접수 후 보름 이내 신속보고한다"])
+    assert not v.ok and "15일 이후" in v.direction_conflicts
+
+
+def test_case_echo_cannot_defuse_direction_conflict():
+    """케이스 서술의 "15일 이후 증상"이 규정 "15일 이내"의 방향 뒤집기 경고를
+    조용히 무력화하던 구멍 — 방향 판정 기준은 strict 계층이고, 케이스에 같은
+    방향이 있으면 경고를 끄는 대신 from_case 라벨로 모호성을 가시화한다."""
+    v = verify_answer(
+        "보고는 15일 이후에 하면 됩니다.",
+        ["인지일로부터 15일 이내 신속보고"],
+        user_fact_texts=["환자가 복용 15일 이후 증상 발생"],
+    )
+    assert not v.ok and "15일 이후" in v.direction_conflicts
+    check = next(c for c in v.checks if c.kind == "direction")
+    assert check.from_case  # 경고 문구가 '재서술 가능성'을 함께 안내
+    assert "재서술" in warning_text(v)
+
+
+def test_case_echo_cannot_defuse_date_direction_conflict():
+    """날짜 방향 축도 동일 — 케이스 서술이 기한 날짜의 방향 경고를 못 끈다."""
+    v = verify_answer(
+        "2026-07-25 이후 제출하면 됩니다.",
+        ["보완자료는 2026-07-25까지 제출한다"],
+        user_fact_texts=["진료기록은 2026-07-25 이후 확보 예정"],
+    )
+    assert not v.ok and "2026-07-25 이후" in v.direction_conflicts
+
+
+def test_case_only_qualifier_does_not_create_conflict():
+    """strict 에 그 값의 한정어가 없으면 케이스 서술의 한정어만으로 충돌을
+    만들지 않는다 — 규정 근거 없는 판정 금지(보수성). 정당한 케이스 재서술
+    ("30일 이후 증상 발생")은 방향 오탐 없이 case_origin 라벨만 받는다."""
+    v = verify_answer(
+        "환자는 복용 30일 이후 증상이 발생했습니다.",
+        ["인지일로부터 15일 이내 신속보고"],
+        user_fact_texts=["환자가 복용 30일 이후 증상 발생"],
+    )
+    assert v.ok and not v.direction_conflicts and v.case_origin == ["30일"]
+
+
+def test_partial_date_restatement_passes():
+    """마감일의 연도 없는 재서술("7월 25일")은 표기 변형 — '25일' 성분이 기간
+    클레임으로 오추출되어 옳은 답변에 오탐이 붙던 경로의 봉합."""
+    v = verify_answer("보고 기한은 7월 25일입니다.", ['"deadline_date": "2026-07-25"'])
+    assert v.ok, v.summary()
+    check = next(c for c in v.checks if c.claim == "7월 25일")
+    assert check.kind == "date" and check.supported
+
+
+def test_wrong_partial_date_is_flagged_as_date():
+    """틀린 부분 날짜는 '30일'(기간)이 아니라 '7월 30일'(날짜)로 잡힌다 —
+    부분 날짜가 아예 추출되지 않아 기간 오추출에 우연히 기대던 상태의 해소."""
+    v = verify_answer("보고 기한은 7월 30일입니다.", ['"deadline_date": "2026-07-25"'])
+    assert not v.ok and "7월 30일" in v.unsupported
+    assert "30일" not in v.unsupported  # 기간 클레임으로 오추출되지 않는다
+
+
+def test_partial_date_contamination_blocked():
+    """근거에 우연히 기간 '25일'이 있어도, 틀린 날짜 "9월 25일"이 그 값에
+    지지되어 통과하는 오염이 없어야 한다 — 부분 날짜는 날짜 축으로만 대조."""
+    v = verify_answer(
+        "마감은 9월 25일입니다.",
+        ['"deadline_date": "2026-07-25"', "처리 기간은 25일 이내"],
+    )
+    assert not v.ok and "9월 25일" in v.unsupported
+
+
+def test_partial_date_in_question_gets_premise_label():
+    v = verify_answer(
+        "7월 30일 마감이라는 전제는 확인되지 않습니다.",
+        ['"deadline_date": "2026-07-25"'],
+        question="마감이 7월 30일 맞나요?",
+    )
+    assert "7월 30일" in v.question_origin
+
+
+def test_bare_year_supported_by_full_date():
+    """"2025년 4월 개정" 속 '2025년'은 근거 날짜(2025-04-01)의 연도 성분 재서술 —
+    미확인 오탐(alert fatigue)을 내지 않는다. 표기 변형이지 환산이 아니다."""
+    v = verify_answer("이 규정은 2025년 4월 개정판 기준입니다.", ['"effective_date": "2025-04-01"'])
+    assert v.ok, v.summary()
+
+
+def test_bare_year_without_any_date_still_flagged():
+    """근거 어디에도 없는 연도는 종전대로 미확인 경고다."""
+    v = verify_answer("2019년 개정 기준입니다.", ['"effective_date": "2025-04-01"'])
+    assert not v.ok and "2019년" in v.unsupported
+
+
+def test_duration_years_not_matched_to_dates():
+    """'3년'(기간)은 연도 폴백의 대상이 아니다 — 달력 연도 형태(19xx·20xx)만."""
+    v = verify_answer("유효기간은 3년입니다.", ['"effective_date": "2025-04-01"'])
+    assert not v.ok and "3년" in v.unsupported
+
+
+def test_iso_date_with_il_suffix_not_extracted_as_duration():
+    """근거의 "2026-07-25일이다" 표기에서 '25일'(기간)이 오추출되면, 답변의
+    지어낸 '25일 기한'이 그 오염된 값에 지지되어 통과한다 — 경계로 차단."""
+    nums, dates = extract_claims("시행일은 2026-07-25일이다")
+    assert ("25", "일") not in nums and "2026-07-25" in dates
+    v = verify_answer("처리 기한은 25일 이내입니다.", ["시행일은 2026-07-25일이다"])
+    assert not v.ok and "25일" in v.unsupported
+
+
+def test_legal_range_conjunction_covered_by_unit_extraction():
+    """법령체 범위 표기 "15일 내지 30일"은 단위가 양쪽에 붙어 기존 추출로
+    커버된다 — '내지' 전용 처리가 필요 없음을 회귀로 고정(루프 검토 결과)."""
+    nums, _ = extract_claims("보완 기간은 15일 내지 30일로 한다")
+    assert ("15", "일") in nums and ("30", "일") in nums
+
+
+def test_gate_stats_counts_case_label():
+    """case_origin 라벨은 경고가 아니라서 죽어도 소리가 없다 — 계기판이 라벨률
+    추이를 세어야 '답변이 규정 대신 사용자 서술에 기대기 시작'하는 이동이 보인다."""
+    from src.observability import GateStats
+
+    gs = GateStats()
+    gs.record({"ok": True, "checked": 2, "case_origin": ["30일"]})
+    gs.record({"ok": True, "checked": 1})
+    snap = gs.snapshot()
+    assert snap["case_labeled"] == 1 and snap["warned"] == 0

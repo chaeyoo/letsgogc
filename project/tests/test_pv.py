@@ -67,6 +67,21 @@ def test_triage_valid_awareness_date_has_no_date_caveat():
     assert not any("YYYY-MM-DD" in c for c in t.caveats)
 
 
+def test_triage_future_awareness_date_is_noisy():
+    """형식은 유효해도 '미래'인 인지일은 오타 가능성이 높다 — 형식 오류에만
+    caveat 를 달고 값 오류는 조용히 통과시키던 비대칭의 봉합. 계산은 입력값대로
+    수행한다(자동 정정은 또 다른 조용한 폴백)."""
+    import datetime as dt
+
+    future = (dt.date.today() + dt.timedelta(days=400)).isoformat()
+    t = assess_case("복용 후 입원", awareness_date=future)
+    assert t.deadline_date is not None  # 계산은 입력값 기준으로 계속된다
+    assert any("미래" in c and "확인" in c for c in t.caveats)
+    # 과거·오늘 인지일에는 미래 caveat 가 붙지 않는다(오탐 방지)
+    t2 = assess_case("복용 후 입원", awareness_date="2026-07-01")
+    assert not any("미래" in c for c in t2.caveats)
+
+
 # ---------------------------------------------------------------------------
 # PII 비식별화
 # ---------------------------------------------------------------------------
@@ -75,6 +90,14 @@ def test_redact_masks_common_pii():
     assert "750101" not in r.text and "010-1234" not in r.text and "kim@test.com" not in r.text
     assert "김철수" not in r.text
     assert {"주민등록번호", "전화번호", "이메일", "이름(호칭)"} <= set(r.counts)
+
+
+def test_redact_masks_unhyphenated_rrn_and_dotted_phone():
+    """구분자 변형(무하이픈 주민번호·점 구분 전화)도 마스킹한다 — 구분자 어휘가
+    좁으면 그만큼이 PII 우회로다(마스킹은 과탐이 미탐보다 싼 안전장치)."""
+    r = redact("환자 9001011234567, 연락처 010.1234.5678 로 회신")
+    assert "9001011234567" not in r.text and "010.1234.5678" not in r.text
+    assert r.counts.get("주민등록번호") == 1 and r.counts.get("전화번호") == 1
 
 
 def test_redact_report_never_contains_original_values():
