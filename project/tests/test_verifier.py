@@ -134,6 +134,44 @@ def test_direction_matching_lower_bound_passes():
     assert v.ok
 
 
+def test_date_direction_flip_is_flagged():
+    """근거의 "…까지"(상한) 기한 날짜를 "… 이후"로 뒤집는 왜곡 — 날짜는 근거에
+    실존해 존재 대조를 통과하므로, 방향 축이 날짜에도 있어야 잡힌다(수치에만
+    방향 축이 있던 비대칭의 해소)."""
+    v = verify_answer(
+        "보완자료는 2026-07-25 이후에 제출하면 됩니다.",
+        ["보완자료는 2026-07-25까지 제출한다."],
+    )
+    assert not v.ok and "2026-07-25 이후" in v.direction_conflicts
+    assert "방향" in warning_text(v)
+
+
+def test_date_direction_korean_notation_symmetric():
+    """근거가 한국어 날짜 표기여도 정규화 후 대칭으로 대조된다."""
+    v = verify_answer(
+        "2026-07-25 이후 제출 가능합니다.",
+        ["보완자료는 2026년 7월 25일까지 제출한다."],
+    )
+    assert not v.ok and "2026-07-25 이후" in v.direction_conflicts
+
+
+def test_date_direction_same_class_passes():
+    """까지↔이내는 같은 방향(상한) — 동의 표현을 충돌로 오탐하지 않는다."""
+    v = verify_answer("2026-07-25까지 제출합니다.", ["제출 기한은 2026-07-25 이내로 한다."])
+    assert v.ok
+
+
+def test_date_direction_without_source_qualifier_not_flagged():
+    """근거에 그 날짜의 한정어가 없으면(도구 라벨 JSON 등) 판단하지 않는다 — 보수성.
+    "마감일 이후에는 지연보고로 처리된다" 같은 정당한 '이후' 용례를 오탐하지 않기
+    위한 규칙이기도 하다(수치 방향 대조와 동일)."""
+    v = verify_answer(
+        "2026-07-25 이후에는 지연보고로 처리됩니다.",
+        ['{"deadline_date": "2026-07-25"}'],
+    )
+    assert v.ok and not v.direction_conflicts
+
+
 # ---------------------------------------------------------------------------
 # 질문 에코 — 사용자 전제는 신뢰 소스가 아니라 '전제 확인' 라벨
 # ---------------------------------------------------------------------------
@@ -152,6 +190,44 @@ def test_question_does_not_promote_claim_to_supported():
     """질문에 있던 수치라도 supported 로 승격되지는 않는다 — 라벨만 다르다."""
     v = verify_answer("답은 30일입니다.", ["15일 이내"], question="30일인가요?")
     assert not v.ok and "30일" in v.unsupported
+
+
+# ---------------------------------------------------------------------------
+# 케이스 에코 — 사용자 사실은 지지 근거로 인정하되 from_case 라벨로 구분한다
+# ---------------------------------------------------------------------------
+def test_case_only_support_is_labeled_not_warned():
+    """케이스의 "30일간 복용"이 답변의 "보고 기한 30일"을 지지하는 조용한 통과 —
+    차단(재서술 오탐)도 침묵(승격 은폐)도 아닌 라벨로 가시화한다."""
+    v = verify_answer(
+        "케이스상 복용 기간은 30일이며, 보고 기한 규정은 15일 이내입니다.",
+        ["규정: 인지일로부터 15일 이내 신속보고"],
+        user_fact_texts=["환자가 A정을 30일간 복용 후 두드러기 발생"],
+    )
+    assert v.ok                                   # 경고는 아니다
+    assert v.case_origin == ["30일"]              # 그러나 등급이 다름을 라벨로
+    assert "15일" not in v.case_origin            # 규정 지지 클레임은 라벨 없음
+    check = next(c for c in v.checks if c.claim == "30일")
+    assert check.supported and check.from_case
+
+
+def test_regulation_supported_claim_not_labeled_from_case():
+    """같은 값이 규정 근거에도 있으면 케이스 라벨을 붙이지 않는다(strict 우선)."""
+    v = verify_answer(
+        "보고 기한은 15일 이내입니다.",
+        ["인지일로부터 15일 이내 신속보고"],
+        user_fact_texts=["환자가 15일 전부터 복용"],
+    )
+    assert v.ok and v.case_origin == []
+
+
+def test_claim_nowhere_is_still_unsupported_with_facts_present():
+    """케이스 계층이 있어도 어디에도 없는 값은 종전대로 미확인 경고다."""
+    v = verify_answer(
+        "보고 기한은 45일 이내입니다.",
+        ["인지일로부터 15일 이내"],
+        user_fact_texts=["환자가 30일간 복용"],
+    )
+    assert not v.ok and "45일" in v.unsupported
 
 
 # ---------------------------------------------------------------------------
@@ -201,11 +277,27 @@ def test_gate_stats_records_and_snapshots():
     from src.observability import GateStats
 
     gs = GateStats()
-    gs.record({"ok": True, "unsupported": []})
-    gs.record({"ok": False, "unsupported": ["30일"], "role_conflicts": ["기한 2026-07-10"]})
+    gs.record({"ok": True, "unsupported": [], "checked": 2})
+    gs.record({"ok": False, "unsupported": ["30일"], "role_conflicts": ["기한 2026-07-10"], "checked": 3})
     snap = gs.snapshot()
     assert snap["responses"] == 2 and snap["warned"] == 1 and snap["warn_rate"] == 0.5
     assert snap["by_axis"] == {"unsupported": 1, "role_conflicts": 1}
+
+
+def test_gate_stats_checked_rate_is_immune_to_traffic_mix():
+    """warn_rate 는 회피·무클레임 응답이 분모에 섞여 트래픽 믹스에 따라 착시를
+    만든다 — warn_rate_checked 는 '검증할 것이 있던 응답'만 분모로 잡는다."""
+    from src.observability import GateStats
+
+    gs = GateStats()
+    gs.record({"ok": True, "checked": 2})                       # 클레임 있음·통과
+    gs.record({"ok": False, "unsupported": ["30일"], "checked": 1})  # 클레임 있음·경고
+    for _ in range(8):
+        gs.record({"ok": True, "checked": 0})                   # 회피/무클레임 홍수
+    snap = gs.snapshot()
+    assert snap["warn_rate"] == 0.1          # 믹스에 희석된 값
+    assert snap["checked_responses"] == 2
+    assert snap["warn_rate_checked"] == 0.5  # 믹스와 무관한 실질 경고율
 
 
 @pytest.mark.asyncio
@@ -233,6 +325,24 @@ def test_history_mode_allows_superseded():
     cites = [{"doc_id": "REG-013", "status": "superseded"}]
     v = verify_answer("구판 기준은 30일이었다", ["30일"], cites, allow_superseded=True)
     assert v.ok
+
+
+def test_superseded_allowance_is_per_document():
+    """경고를 끄는 스위치의 면적은 문서 단위 — 이력 검색이 반환한 문서(REG-013)의
+    폐지본 인용만 면제되고, 같은 응답의 다른 폐지본 인용(현행 검색에 상류
+    결함으로 섞여 든 문서)은 계속 경고된다. 전역 bool 이면 이력 턴 동안 버전
+    축이 통째로 꺼진다."""
+    cites = [
+        {"doc_id": "REG-013", "status": "superseded"},
+        {"doc_id": "REG-099", "status": "superseded"},
+    ]
+    v = verify_answer("구판 기준은 30일이었다", ["30일"], cites,
+                      allowed_superseded_ids={"REG-013"})
+    assert not v.ok and v.superseded_cited == ["REG-099"]
+    # 허용 집합이 모든 인용을 덮으면 통과
+    v2 = verify_answer("구판 기준은 30일이었다", ["30일"], cites,
+                       allowed_superseded_ids={"REG-013", "REG-099"})
+    assert v2.ok
 
 
 def test_active_citation_not_flagged():

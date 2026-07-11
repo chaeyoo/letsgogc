@@ -133,6 +133,10 @@ function renderBot(bubble, data) {
     const v = data.verification;
     if (v.ok) {
       ver = v.checked ? `<span class="pill ok">🔍 수치 검증 통과 (${v.checked}건 대조)</span>` : '';
+      // 케이스 유래 지지 라벨: 경고는 아니지만 근거의 '등급'이 다르다 —
+      // 이 수치의 지지 근거는 규정·도구가 아니라 사용자의 케이스 서술이다.
+      if ((v.case_origin || []).length)
+        ver += ` <span class="pill">📝 케이스 서술 유래: ${v.case_origin.map(esc).join(', ')}</span>`;
     } else {
       const qOrigin = new Set(v.question_origin || []);
       const halluc = (v.unsupported || []).filter(c => !qOrigin.has(c));

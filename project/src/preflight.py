@@ -58,6 +58,42 @@ _CANARY_CASE = "환자가 A정 복용 후 심한 두드러기로 입원했습니
 _CANARY_AS_OF = "2025-01-01"
 _CANARY_AS_OF_DOC = "REG-013"
 
+# 검증 게이트 자가 테스트 케이스 — 런타임 게이트의 **모든 경고 축**을 기동 전에
+# 1건씩 태워 본다. 처음에는 수치 존재 축 1개만 심어 봤는데, 그러면 방향·역할·
+# 버전·전제 라벨 축은 고장난 채 배포될 수 있다 — '자가 테스트를 한 안전장치에만
+# 적용하는 비대칭이 사각지대'라는 원칙(게이트 vs PII 마스킹)은 게이트 **내부의
+# 축들 사이에도** 똑같이 적용되어야 한다. planted(심은 오류) 케이스는 기대한
+# 바로 그 축에 걸려야 하고(다른 축에 우연히 걸린 통과는 통과가 아니다),
+# clean(정상) 케이스는 오탐 없이 통과해야 한다. 축 목록과 테이블의 커버리지가
+# 어긋나면 테스트(test_preflight)가 실패한다 — 새 축을 추가하면 자가 테스트도
+# 함께 추가하도록 구조로 강제한 것.
+_GATE_TOOL_LABELED = '{"awareness_date": "2026-07-10", "deadline_date": "2026-07-25"}'
+_GATE_SELF_TESTS: tuple[dict, ...] = (
+    {"name": "수치 존재·심은 오류", "answer": "보고 기한은 30일 이내입니다",
+     "trusted": ["보고 기한은 15일 이내"], "expect_ok": False, "axis": "unsupported"},
+    {"name": "수치 존재·정상", "answer": "보고 기한은 15일 이내입니다",
+     "trusted": ["보고 기한은 15일 이내"], "expect_ok": True},
+    {"name": "날짜 존재·심은 오류", "answer": "마감일은 2026-07-30 입니다",
+     "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "unsupported"},
+    {"name": "방향 한정어·심은 오류", "answer": "15일 이후에 보고하면 됩니다",
+     "trusted": ["인지일로부터 15일 이내 신속보고"], "expect_ok": False, "axis": "direction_conflicts"},
+    {"name": "날짜 방향 한정어·심은 오류", "answer": "2026-07-25 이후에 제출하면 됩니다",
+     "trusted": ["보완자료는 2026-07-25까지 제출한다"], "expect_ok": False, "axis": "direction_conflicts"},
+    {"name": "날짜 역할 스왑·심은 오류", "answer": "보고 기한: 2026-07-10 (인지일 2026-07-25 기준)",
+     "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "role_conflicts"},
+    {"name": "날짜 역할·정상", "answer": "보고 기한: 2026-07-25 (인지일 2026-07-10 기준)",
+     "trusted": [_GATE_TOOL_LABELED], "expect_ok": True},
+    {"name": "폐지본 인용·심은 오류", "answer": "이상사례는 30일 이내 보고한다",
+     "trusted": ["30일 이내"], "citations": [{"doc_id": "REG-013", "status": "superseded"}],
+     "expect_ok": False, "axis": "superseded_cited"},
+    {"name": "폐지본 인용·이력 모드 정상", "answer": "구판 기준은 30일이었다",
+     "trusted": ["30일"], "citations": [{"doc_id": "REG-013", "status": "superseded"}],
+     "allow_superseded": True, "expect_ok": True},
+    {"name": "전제 에코 라벨", "answer": "30일이 아니라 15일 이내입니다",
+     "trusted": ["인지일로부터 15일 이내"], "question": "보고 기한이 30일 맞나요?",
+     "expect_ok": False, "axis": "question_origin"},
+)
+
 
 def check_config() -> list[str]:
     """하이퍼파라미터 간 불변식 — 값 각각이 아니라 '조합'의 모순을 잡는다."""
@@ -218,12 +254,28 @@ def smoke_checks() -> list[str]:
         )
 
     # (c) 검증 게이트 자가 테스트: 게이트가 고장난 채 배포되면 안전장치가
-    #     없는 것보다 나쁘다(있다고 믿게 만들므로). 잡아야 할 것과
-    #     통과시켜야 할 것을 각각 1건씩 태워 본다.
-    if verify_answer("보고 기한은 30일 이내입니다", ["보고 기한은 15일 이내"]).ok:
-        problems.append("검증 게이트 자가 테스트 실패: 근거 밖 수치(30일)가 통과됨")
-    if not verify_answer("보고 기한은 15일 이내입니다", ["보고 기한은 15일 이내"]).ok:
-        problems.append("검증 게이트 자가 테스트 실패: 정상 답변(15일)에 오탐")
+    #     없는 것보다 나쁘다(있다고 믿게 만들므로). 런타임 게이트의 모든 경고
+    #     축(존재·방향·역할·버전·전제 라벨)에 대해 '심은 오류는 그 축에 걸리고,
+    #     정상 케이스는 통과한다'를 테이블로 태워 본다(_GATE_SELF_TESTS).
+    for t in _GATE_SELF_TESTS:
+        v = verify_answer(
+            t["answer"],
+            t["trusted"],
+            t.get("citations"),
+            t.get("allow_superseded", False),
+            question=t.get("question", ""),
+        )
+        s = v.summary()
+        if t["expect_ok"]:
+            if not v.ok:
+                problems.append(f"검증 게이트 자가 테스트 실패[{t['name']}]: 정상 케이스에 오탐 — {s}")
+        elif v.ok:
+            problems.append(f"검증 게이트 자가 테스트 실패[{t['name']}]: 심은 오류가 통과됨")
+        elif not s.get(t["axis"]):
+            problems.append(
+                f"검증 게이트 자가 테스트 실패[{t['name']}]: 기대 축({t['axis']})이 아닌"
+                f" 다른 축에 걸렸다 — 해당 축의 탐지가 죽었을 수 있음: {s}"
+            )
 
     # (d) PII 마스킹 자가 테스트: 안전장치 자가 검사를 검증 게이트에만 하고
     #     입구 경계(마스킹)에는 안 하는 비대칭이 사각지대였다 — 마스킹이 고장난
