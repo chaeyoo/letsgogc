@@ -110,8 +110,17 @@ def get_ra_deadlines(within_days: int = 30, task_type: str = "") -> dict:
 
     Returns:
         {"today", "deadlines": [{"item","type","due_date","d_day","owner","status"}...]}.
+        task_type 이 데이터에 없는 유형이면 {"error", "available": [...]} — 매칭 0건과
+        구분되는 명시적 에러다.
     """
     data = _load_ra_tasks()
+    # 존재하지 않는 유형은 빈 목록이 아니라 에러로 답한다 — 오타 난 필터에
+    # "임박한 마감이 없습니다"라고 답하는 것은 '자신 있는 오답'이다(조용한 빈
+    # 결과 금지). available 을 함께 주므로 LLM 에이전트가 스스로 정정 재시도한다
+    # (get_submission_checklist 와 동일한 에러 계약).
+    known_types = sorted({d["type"] for d in data["deadlines"]})
+    if task_type and task_type not in known_types:
+        return {"error": f"'{task_type}' 유형의 업무가 없음", "available": known_types}
     today = _dt.date.today()
     out = []
     for d in data["deadlines"]:
@@ -231,7 +240,8 @@ def draft_ae_report(
          (사전 미수록 표현은 LLT 참조 후보 또는 '미코딩 감지'로 표시하고
          사람 확정을 follow-up 으로 요청)
       5) 위를 종합한 마크다운 초안(draft_markdown) 조립
-    입력 속 개인정보는 초안 생성 전에 마스킹된다(초안에는 비식별 서술만 남음).
+    개인정보는 초안 생성 전에 마스킹된다 — case_description 뿐 아니라 reporter·
+    patient_info 등 모든 자유 텍스트 인자가 대상이다(초안에는 비식별 서술만 남음).
 
     Args:
         case_description: 이상사례 케이스 서술(자유 텍스트).
@@ -246,15 +256,22 @@ def draft_ae_report(
          "candidate_terms", "uncoded_expressions",
          "pii_masked", "basis": {"results": [...]}}.
     """
-    from ..pv.redactor import redact
+    from ..pv.redactor import merged_summary, redact
     from ..pv.report import build_report
 
+    # 자유 텍스트 인자는 '전부' 마스킹한다 — case_description 만 막으면 나머지
+    # 인자(reporter="약사 홍길동님 010-…")가 PII 우회로가 된다. 에이전트 경유
+    # 시에는 인자가 이미 마스킹된 메시지에서 파생되지만, stdio 단독 사용
+    # (Claude Desktop 등)에서는 인자가 외부에서 직접 들어온다(심층방어).
     masked = redact(case_description)
+    masked_drug = redact(suspected_drug)
+    masked_reporter = redact(reporter)
+    masked_patient = redact(patient_info)
     r = build_report(
         masked.text,
-        suspected_drug=suspected_drug,
-        reporter=reporter,
-        patient_info=patient_info,
+        suspected_drug=masked_drug.text,
+        reporter=masked_reporter.text,
+        patient_info=masked_patient.text,
         awareness_date=awareness_date,
     )
     basis = search_regulations("중대한 이상사례 보고 기한 신속보고 인과성 평가", top_n=2)
@@ -273,7 +290,7 @@ def draft_ae_report(
         "coded_terms": [ct.as_dict() for ct in r.coded_terms],
         "candidate_terms": [ct.as_dict() for ct in r.candidate_terms],
         "uncoded_expressions": r.uncoded_expressions,
-        "pii_masked": masked.summary(),
+        "pii_masked": merged_summary(masked, masked_drug, masked_reporter, masked_patient),
         "basis": basis,
     }
 

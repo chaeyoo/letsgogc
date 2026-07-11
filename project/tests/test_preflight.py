@@ -63,6 +63,19 @@ def test_tasks_check_catches_bad_schema(tmp_path):
     assert "비어 있다" in text             # 빈 체크리스트
 
 
+def test_smoke_catches_broken_redactor(monkeypatch):
+    """안전장치 자가 테스트의 대칭성: 검증 게이트뿐 아니라 PII 마스킹도 고장난
+    채로는 배포되지 않는다 — 심은 개인정보가 살아남으면 smoke 가 잡아야 한다."""
+    from src.pv import redactor
+
+    monkeypatch.setattr(
+        redactor, "redact",
+        lambda text: redactor.RedactionReport(text=text, counts={}),  # 아무것도 안 지우는 고장
+    )
+    problems = preflight.smoke_checks()
+    assert any("PII 마스킹 자가 테스트 실패" in p for p in problems)
+
+
 def test_config_check_catches_contradictions(monkeypatch):
     """각 값은 유효해도 조합이 모순인 경우 — 조용한 품질 붕괴의 형태."""
     monkeypatch.setattr(config, "RERANK_TOP_N", 99)  # top_k(8)보다 큼

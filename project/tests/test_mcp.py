@@ -37,6 +37,15 @@ def test_get_ra_deadlines_type_filter():
     assert all(d["type"] == "안전관리" for d in out["deadlines"])
 
 
+def test_deadlines_unknown_type_is_explicit_error():
+    """오타 난 유형 필터에 '마감 없음'(자신 있는 오답)이 아니라 에러+가용 목록으로
+    답한다 — 에이전트가 available 을 보고 스스로 정정 재시도할 수 있는 계약."""
+    bad = get_ra_deadlines(within_days=365, task_type="존재하지않는유형")
+    assert "error" in bad and bad["available"]
+    ok = get_ra_deadlines(within_days=365, task_type=bad["available"][0])
+    assert "deadlines" in ok and "error" not in ok
+
+
 def test_checklist_known_and_unknown():
     ok = get_submission_checklist("품목허가")
     assert ok["category"] == "품목허가" and ok["items"]

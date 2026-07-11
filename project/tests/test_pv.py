@@ -51,6 +51,22 @@ def test_triage_always_flags_human_confirmation():
         assert any("담당자가 확정" in c for c in t.caveats)
 
 
+def test_triage_invalid_awareness_date_is_noisy():
+    """잘못된 인지일 형식은 '조용히' 오늘로 폴백하지 않는다 — 기한이 틀린
+    기준일로 계산됐다는 신호(caveat)가 반드시 남아야 한다(시끄러운 실패)."""
+    t = assess_case("복용 후 입원", awareness_date="2026/07/01")
+    assert t.deadline_date is not None  # 계산 자체는 폴백으로 계속된다
+    assert any("YYYY-MM-DD" in c and "재계산" in c for c in t.caveats)
+    # 비중대 케이스에도 같은 신호가 남는다(인지일은 판정과 무관하게 에코되므로)
+    t2 = assess_case("가벼운 두통", awareness_date="7월 1일")
+    assert any("YYYY-MM-DD" in c for c in t2.caveats)
+
+
+def test_triage_valid_awareness_date_has_no_date_caveat():
+    t = assess_case("복용 후 입원", awareness_date="2026-07-01")
+    assert not any("YYYY-MM-DD" in c for c in t.caveats)
+
+
 # ---------------------------------------------------------------------------
 # PII 비식별화
 # ---------------------------------------------------------------------------

@@ -136,6 +136,24 @@ def test_draft_tool_masks_pii_before_drafting():
     assert not any("환자" in m for m in out["missing"])
 
 
+def test_draft_tool_masks_pii_in_all_freetext_args():
+    """case_description 만 마스킹하면 reporter·patient_info 인자가 PII 우회로가
+    된다 — stdio 단독 사용 시 인자는 입구 마스킹을 거치지 않고 직접 들어온다."""
+    out = draft_ae_report(
+        "환자가 C정 복용 후 사망",
+        reporter="담당 약사 홍길동님 (010-9999-8888)",
+        patient_info="45세 남성, 차트번호: A-1234",
+        awareness_date="2026-07-01",
+    )
+    dump = str(out)  # 초안·필드·팔로업 어디에도 원 값이 남으면 안 된다
+    assert "홍길동" not in dump and "010-9999-8888" not in dump and "A-1234" not in dump
+    # 마스킹 리포트는 전 필드 합산으로 하나만 보고된다
+    kinds = {m["type"] for m in out["pii_masked"]}
+    assert {"이름(호칭)", "전화번호", "환자/차트번호"} <= kinds
+    # 마스킹 후에도 존재 신호가 남아 최소보고요건(환자·보고자) 판정은 유지된다
+    assert out["reportable"] is True
+
+
 def test_assess_tool_now_includes_causality_and_coding():
     out = assess_adverse_event("복용 후 두드러기로 입원, 중단 후 호전", awareness_date="2026-07-01")
     assert out["causality"]["suggested"] == PROBABLE
