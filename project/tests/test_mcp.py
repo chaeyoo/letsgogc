@@ -22,6 +22,23 @@ def test_search_regulations_contract():
             assert key in r
 
 
+def test_search_as_of_returns_then_active_version():
+    """시점 조회 계약: as_of 시점에 시행 중이던 버전(폐지 여부 무관)을 반환한다."""
+    out = search_regulations("중대한 이상사례 보고 기한", top_n=1, as_of="2025-01-01")
+    assert out["results"], "시점 조회가 0건 — 당시 현행 버전이 걸러졌다"
+    assert out["results"][0]["doc_id"] == "REG-013"
+    assert out["results"][0]["status"] == "superseded"  # 출처에 폐지 상태가 그대로 노출
+
+
+def test_search_bad_as_of_is_explicit_error():
+    """형식이 틀린 as_of 를 조용히 무시하고 현행 기준으로 답하면 '그 시점 규정'을
+    받았다고 믿게 되는 자신 있는 오답 — 명시적 에러 계약으로 답한다(다른 도구의
+    error+available 계약과 같은 원칙)."""
+    bad = search_regulations("보고 기한", as_of="2025/01/01")
+    assert "error" in bad and "expected" in bad
+    assert "results" not in bad
+
+
 def test_get_ra_deadlines_contract():
     out = get_ra_deadlines(within_days=365)
     assert "today" in out and "deadlines" in out

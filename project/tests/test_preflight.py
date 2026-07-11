@@ -50,6 +50,18 @@ def test_corpus_check_catches_broken_supersede_chain(tmp_path):
     assert any("superseded_by 가 없다" in p for p in problems)
 
 
+def test_corpus_check_catches_chain_date_inversion(tmp_path):
+    """폐지 체인의 시행일 역전 — as_of 시점 조회의 구간 판정([구판 시행일,
+    후속본 시행일))이 빈 구간이 되어 시점 조회를 조용히 망가뜨리는 결함."""
+    _write_doc(tmp_path, "old.md", {"doc_id": "R-OLD", "title": "t", "version": "0.9",
+                                    "effective_date": "2025-01-01", "status": "superseded",
+                                    "superseded_by": "R-NEW"})
+    _write_doc(tmp_path, "new.md", {"doc_id": "R-NEW", "title": "t", "version": "1.0",
+                                    "effective_date": "2024-01-01"})  # 구판보다 이른 시행일
+    problems = preflight.check_corpus(tmp_path)
+    assert any("늦지 않다" in p for p in problems)
+
+
 def test_tasks_check_catches_bad_schema(tmp_path):
     f = tmp_path / "ra_tasks.json"
     f.write_text(

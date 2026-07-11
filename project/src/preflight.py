@@ -51,6 +51,12 @@ _CANARY_QUERY = "중대한 이상사례는 며칠 안에 보고해야 하나?"
 _CANARY_DOC = "REG-005"
 # 입원(중대) but 생명위협 아님 → '인지일+15일' 경로: 기한 '일수'와 '날짜 연산'을 함께 검사
 _CANARY_CASE = "환자가 A정 복용 후 심한 두드러기로 입원했습니다."
+# 시점(as_of) 조회 canary — 현행(REG-005, 2025-04-01 시행) 이전 시점에는
+# 폐지 구판(REG-013)이 '당시 현행'으로 반환되어야 한다. 이것이 깨지는 대표
+# 형태가 '폐지본 기본 제외를 as_of에도 적용 → 개정된 규정은 과거 시점에서
+# 아무 버전도 안 나옴'이라, 시점 조회의 의미론 자체를 기동 전에 검사한다.
+_CANARY_AS_OF = "2025-01-01"
+_CANARY_AS_OF_DOC = "REG-013"
 
 
 def check_config() -> list[str]:
@@ -123,6 +129,22 @@ def check_corpus(reg_dir: Path | None = None) -> list[str]:
                 succ_doc = next(x for x in docs if x.metadata.get("doc_id") == succ)
                 if str(succ_doc.metadata.get("status", "")) == "superseded":
                     problems.append(f"{d.source}: superseded_by '{succ}' 도 폐지본 — 현행 종점이 없는 체인")
+                # 체인의 시간 단조성: 후속본 시행일이 구판 시행일보다 늦어야 한다.
+                # as_of 시점 조회는 [구판 시행일, 후속본 시행일) 구간으로 '당시
+                # 현행'을 판정하므로, 시행일이 역전된 체인은 빈 구간(어느 시점에도
+                # 유효하지 않은 버전)을 만들어 시점 조회를 조용히 망가뜨린다.
+                succ_eff, pred_eff = str(succ_doc.metadata.get("effective_date", "")), eff
+                try:
+                    if (
+                        succ_eff and pred_eff
+                        and _dt.date.fromisoformat(succ_eff) <= _dt.date.fromisoformat(pred_eff)
+                    ):
+                        problems.append(
+                            f"{d.source}: 후속본 '{succ}' 시행일({succ_eff})이 구판 시행일({pred_eff})보다"
+                            " 늦지 않다 — 시점(as_of) 조회의 구간 판정이 깨진다"
+                        )
+                except ValueError:
+                    pass  # 날짜 형식 오류는 위의 형식 검사가 별도로 보고한다
     return problems
 
 
@@ -169,6 +191,19 @@ def smoke_checks() -> list[str]:
         problems.append(
             f"RAG canary 실패: '{_CANARY_QUERY}' 1위가 {res[0].get('doc_id')} (기대: {_CANARY_DOC})"
             " — 코퍼스/인덱스/하이퍼파라미터 변경이 핵심 검색을 깨뜨렸다"
+        )
+
+    # (a') 시점 조회 canary: 과거 시점(as_of)에는 당시 시행 중이던 구판이 나오는가
+    hist = search_regulations(_CANARY_QUERY, top_n=1, as_of=_CANARY_AS_OF).get("results", [])
+    if not hist:
+        problems.append(
+            f"시점 조회 canary 실패: as_of={_CANARY_AS_OF} 검색 결과 0건"
+            " — 당시 시행 중이던 버전이 필터에서 전부 걸러졌다"
+        )
+    elif hist[0].get("doc_id") != _CANARY_AS_OF_DOC:
+        problems.append(
+            f"시점 조회 canary 실패: as_of={_CANARY_AS_OF} 1위가 {hist[0].get('doc_id')}"
+            f" (기대: {_CANARY_AS_OF_DOC} — 그 시점의 현행 버전)"
         )
 
     # (b) PV canary: 대표 케이스(입원=중대)가 인지일+15일로 트리아지되는가

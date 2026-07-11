@@ -102,3 +102,140 @@ async def test_colloquial_in_scope_not_over_abstained():
     r = await agent.chat("부작용이 심각하게 나타났을 때 당국에 얼마나 빨리 알려야 하나요?")
     assert r.grounded is True, "확장 커버리지를 반영하면 범위내로 판정되어야 함"
     assert r.citations
+
+
+@pytest.mark.asyncio
+async def test_unmatched_checklist_falls_back_instead_of_guessing():
+    """'GMP 체크리스트' — 지원 목록에 없는 유형. 이전에는 라우터가 '품목허가'를
+    기본 추측해 엉뚱한 체크리스트를 자신 있게 반환했다(도구에는 error+available
+    계약을 만들어 놓고 라우터가 항상 유효 카테고리를 추측해 그 계약을 우회).
+    이제 지원 목록 안내 + 규정 검색 폴백으로 답한다."""
+    agent = RaAgent()
+    r = await agent.chat("GMP 체크리스트 줘")
+    names = [t.name for t in r.tool_calls]
+    assert names[0] == "get_submission_checklist"
+    assert "search_regulations" in names, "검색 폴백이 수행되어야 함"
+    assert "지원:" in r.answer, "지원 체크리스트 목록 안내가 있어야 함"
+    assert "[품목허가] 준비 체크리스트" not in r.answer, "엉뚱한 체크리스트를 추측 반환하면 안 됨"
+
+
+@pytest.mark.asyncio
+async def test_matched_checklist_still_direct():
+    """확신 있는 신호(변경/안전/허가 어휘)는 기존대로 체크리스트를 바로 답한다."""
+    agent = RaAgent()
+    r = await agent.chat("변경허가 체크리스트 알려줘")
+    assert r.tool_calls[0].name == "get_submission_checklist"
+    assert "[변경허가] 준비 체크리스트" in r.answer
+
+
+def test_strip_echo_removes_all_user_input_fields():
+    """도구 출력의 사용자 입력 에코(query·as_of)는 신뢰 소스에서 제외 — query만
+    빼고 as_of를 남기면 사용자가 지정한 기준일이 날짜 클레임의 '근거'로 승격된다."""
+    from src.agent.agent import _strip_query_echo
+
+    data = {"query": "보고 기한 30일?", "as_of": "2024-06-01",
+            "results": [{"text": "15일 이내", "query": "중첩 에코"}]}
+    out = _strip_query_echo(data)
+    assert "query" not in out and "as_of" not in out
+    assert out["results"][0]["text"] == "15일 이내"
+    assert "query" not in out["results"][0]
+
+
+def test_question_context_labels_multiturn_premise():
+    """이전 턴의 전제 수치를 이어받은 답변은 '환각'이 아니라 '전제 확인 필요'로
+    라벨링되어야 한다 — 단 경고 자체는 여전히 붙는다(면제가 아니라 종류 조정)."""
+    from src.agent.agent import _question_context
+    from src.verify.verifier import verify_answer
+
+    history = [
+        {"role": "user", "content": "보고 기한이 30일 맞지?"},
+        {"role": "assistant", "content": "규정 확인이 필요합니다."},
+    ]
+    q = _question_context("그럼 그 기준으로 언제까지야?", history)
+    assert "30일" in q  # 이력의 사용자 발화가 맥락에 포함된다
+    v = verify_answer("보고 기한은 30일입니다", ["중대한 이상사례 보고 기한은 15일 이내"], question=q)
+    assert not v.ok, "전제 라벨은 경고 면제가 아니다"
+    assert "30일" in v.question_origin, "이전 턴 전제는 from_question 으로 라벨링"
+
+
+def test_question_context_excludes_assistant_turns():
+    """어시스턴트의 이전 답변 속 수치는 전제로 완화 라벨링하지 않는다 — 한 번
+    새어 나간 미확인 수치가 다음 턴부터 '전제'로 면책되는 자기 강화 루프 차단."""
+    from src.agent.agent import _question_context
+
+    history = [
+        {"role": "user", "content": "보고 기한 알려줘"},
+        {"role": "assistant", "content": "보고 기한은 45일입니다."},
+    ]
+    q = _question_context("확실해?", history)
+    assert "45일" not in q
+
+
+@pytest.mark.asyncio
+async def test_offline_history_intent_includes_superseded():
+    """'이력을 요청하면 구판도 노출'이라는 사용 계약은 LLM 모드(모델이 스스로
+    include_superseded 지정)에서만 참이었다 — 오프라인 라우터에는 그 경로 자체가
+    없었다. 이제 이력 의도 감지 시 폐지본 포함 + 폐지본 인용 경고 억제."""
+    agent = RaAgent()
+    r = await agent.chat("이상사례 보고 기한, 예전 규정에서는 어땠어? 개정 이력 포함해서 알려줘")
+    assert r.tool_calls[0].args.get("include_superseded") is True
+    assert any(c.get("doc_id") == "REG-013" for c in r.citations), "구판이 출처에 노출되어야 함"
+    assert not r.verification.get("superseded_cited"), "이력 조회의 폐지본 인용은 결함이 아니다"
+
+
+@pytest.mark.asyncio
+async def test_offline_default_search_stays_current_only():
+    """이력 어휘가 없는 일반 질문은 여전히 현행만 검색한다(기본값 회귀 가드)."""
+    agent = RaAgent()
+    r = await agent.chat("중대한 이상사례 보고 기한은?")
+    assert not r.tool_calls[0].args.get("include_superseded")
+    assert all(c.get("doc_id") != "REG-013" for c in r.citations)
+
+
+def test_question_context_bounded_to_previous_turn():
+    """전제 완화 라벨의 창은 직전 사용자 턴까지 — 대화 전체를 누적하면 오래전
+    무관한 맥락의 수치가 이후 모든 환각을 '전제'로 완화 라벨링한다."""
+    from src.agent.agent import _question_context
+
+    history = [
+        {"role": "user", "content": "시장점유율이 90%인 제품인데 잘 팔려요"},  # 오래된 무관 맥락
+        {"role": "assistant", "content": "네."},
+        {"role": "user", "content": "중대한 이상사례 보고 절차가 궁금해요"},   # 직전 턴
+        {"role": "assistant", "content": "규정을 검색해 안내드릴게요."},
+    ]
+    q = _question_context("그럼 기한은?", history)
+    assert "보고 절차" in q       # 직전 턴은 포함
+    assert "90%" not in q         # 오래된 턴은 미포함
+
+
+def test_contract_error_is_not_trusted_source():
+    """도구의 에러 계약({"error", ...})은 자가 정정용 되먹임이지 근거가 아니다 —
+    에러 문구에 에코된 사용자 입력(잘못된 as_of 등)이 신뢰 소스로 승격되면
+    query·as_of 키 제거로 막은 구멍이 에러 경로로 다시 열린다."""
+    from src.agent.agent import _is_contract_error
+
+    assert _is_contract_error({"error": "as_of '2024/06/01' 가 YYYY-MM-DD 형식이 아님",
+                               "expected": "YYYY-MM-DD"})
+    assert not _is_contract_error({"results": []})
+    assert not _is_contract_error("텍스트 출력")
+
+
+@pytest.mark.asyncio
+async def test_history_markers_do_not_overmatch_current_questions():
+    """'이력 관리 요건' 같은 현행 질문의 일상 어휘가 이력 조회로 오인되면
+    폐지본이 검색에 섞이고 버전 경고(allow_superseded)까지 꺼진다 — 안전장치를
+    끄는 스위치는 명시적 요청 구문에만 반응해야 한다."""
+    agent = RaAgent()
+    r = await agent.chat("이상사례 접수·처리 이력 관리 요건은?")
+    assert not r.tool_calls[0].args.get("include_superseded")
+
+
+@pytest.mark.asyncio
+async def test_unmatched_checklist_out_of_corpus_stays_coherent():
+    """체크리스트 미매칭 + 폴백 검색까지 회피된 경우 — 안내문이 '검색 결과'를
+    미리 약속하면 회피 문구와 자기모순이 된다. 지원 목록 안내와 회피 안내가
+    모순 없이 공존해야 한다."""
+    agent = RaAgent()
+    r = await agent.chat("ISO 9001 인증 체크리스트 줘")
+    assert "지원:" in r.answer
+    assert "아래는 규정 검색 결과" not in r.answer
