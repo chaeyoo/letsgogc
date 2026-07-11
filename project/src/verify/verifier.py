@@ -14,7 +14,10 @@
      ("15일 이내" → "15일 이후") 별도 경고를 낸다. 방향 한정어는
      닫힌 어휘 집합(이내·이하·미만·까지 / 이상·이후·초과)이라 기계 검증이
      가능하다 — '관계 왜곡은 전부 LLM judge 몫'이라는 초기 경계 설정을
-     재심사해 결정론으로 끌어온 부분이다.
+     재심사해 결정론으로 끌어온 부분이다. 같은 검증을 **날짜에도 대칭
+     적용**한다("2026-07-25까지" → "2026-07-25 이후") — 방향 검증이 기간
+     표기에만 있고 날짜 표기에는 없으면, 같은 기한 왜곡이 표기에 따라
+     한쪽만 잡히는 축 간 비대칭(사각지대)이 된다.
   3. 날짜 역할 검증 — 도구 출력에 날짜가 여러 개면(인지일·마감일·오늘)
      답변이 두 날짜의 **역할을 맞바꿔도**("보고 기한은 <인지일>입니다") 각
      날짜가 신뢰 소스에 존재하므로 존재 대조(1)는 통과한다. 결정론적 도구는
@@ -35,6 +38,12 @@
   통과하는 구멍이 생긴다(전제의 승격). 대신 질문에 있던 수치가 미확인으로
   판정되면 `from_question` 라벨로 구분해, 경고 문구가 '환각'이 아니라
   '전제 확인 필요'를 가리키게 한다(부정·정정 맥락의 오탐 완화).
+  케이스 서술 에코(case)는 **2계층**이다: 지지 근거로는 인정하되(케이스
+  재서술은 정당 — 경고하면 초안마다 오탐), 그 계층에서만 지지되는 클레임은
+  `from_case` 라벨로 노출한다. "케이스는 사실"에서 "케이스가 규정 클레임의
+  근거"로 건너뛰는 비약(사용자 서술의 승격)을 차단이 아니라 가시화로 다룬다
+  — 기계는 '케이스 재서술'과 '케이스 수치가 우연히 규정 클레임을 지지'를
+  구분할 수 없기 때문이다(구분은 사람의 몫, 라벨은 그 판단을 빠르게).
 
 단위의 엄격성:
   '근무일'과 '일'은 **다른 단위**다 — "120 근무일"을 "120일"로 옮기면 실제
@@ -114,6 +123,15 @@ _LOWER_WORDS = ("이상", "이후", "초과", "경과")
 _QUAL_RE = re.compile(
     rf"(\d+(?:\.\d+)?)\s*({_UNIT_ALT})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
 )
+# 날짜에 붙는 방향 한정어("2026-07-25까지" ↔ "2026-07-25 이후") — 방향 검증이
+# 수치에만 있고 날짜에는 없는 것은 축 간 비대칭이었다: 근거가 "…까지 제출"인
+# 기한 날짜를 답변이 "… 이후 제출"로 뒤집어도 날짜 자체는 근거에 실존해
+# 존재 대조를 통과한다. 수치 방향 뒤집기와 같은 등급의 오류가 표기(기간 vs
+# 날짜)에 따라 한쪽만 잡히던 사각지대. 대조 규칙은 수치와 동일하게 보수적 —
+# 근거가 그 날짜에 대해 '반대 방향만' 말할 때만 플래그한다.
+_DATE_QUAL_RE = re.compile(
+    rf"(?<![\d-])(\d{{4}}-\d{{2}}-\d{{2}})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
+)
 _OPPOSITE = {"상한": "하한", "하한": "상한"}
 
 # 날짜 역할 대조 — 결정론적 도구의 역할 라벨(직렬화된 JSON 키) ↔ 답변의 역할 키워드.
@@ -162,6 +180,7 @@ class ClaimCheck:
     supported: bool   # 신뢰 소스에서 확인됐는가 (direction/role 은 항상 False=충돌)
     evidence: str = ""        # 지원 시 신뢰 소스의 해당 위치 스니펫(사람 대조용)
     from_question: bool = False  # 미확인 수치가 사용자 질문에 있던 값인가(전제 에코)
+    from_case: bool = False      # 지지 근거가 '사용자 케이스 서술'뿐인가(승격 라벨)
 
     def as_dict(self) -> dict:
         return {
@@ -170,6 +189,7 @@ class ClaimCheck:
             "supported": self.supported,
             "evidence": self.evidence,
             "from_question": self.from_question,
+            "from_case": self.from_case,
         }
 
 
@@ -199,6 +219,18 @@ class VerificationResult:
         return [c.claim for c in self.checks if not c.supported and c.from_question]
 
     @property
+    def case_origin(self) -> list[str]:
+        """지지 근거가 사용자 케이스 서술뿐인 클레임 — 경고는 아니지만 등급이 다르다.
+
+        '케이스는 사실'이므로 답변이 케이스를 재서술하는 것은 정당하다(경고하면
+        보고서 초안마다 오탐 — alert fatigue). 그러나 '사실'이라는 성질이 그 값을
+        규정 클레임의 근거로 승격시키지는 않는다 — 케이스의 "30일간 복용"이
+        답변의 "보고 기한 30일"을 지지하면 그것은 사용자 서술의 승격이다.
+        기계는 두 경우를 구분할 수 없으므로 차단 대신 **라벨**로 노출한다:
+        감사 로그·UI 가 '규정/도구 근거'와 '사용자 서술 근거'를 구분해 읽는다."""
+        return [c.claim for c in self.checks if c.supported and c.from_case]
+
+    @property
     def ok(self) -> bool:
         return (
             not self.unsupported
@@ -216,6 +248,7 @@ class VerificationResult:
             "direction_conflicts": self.direction_conflicts,
             "role_conflicts": self.role_conflicts,
             "question_origin": self.question_origin,
+            "case_origin": self.case_origin,
             "superseded_cited": self.superseded_cited,
             "checks": [c.as_dict() for c in self.checks],
         }
@@ -259,6 +292,19 @@ def _qualifier_map(text: str) -> dict[tuple[str, str], set[str]]:
         unit = "주" if m.group(2) == "주일" else m.group(2)
         key = (m.group(1).lstrip("0") or "0", unit)
         out.setdefault(key, set()).add(_qual_class(m.group(3)))
+    return out
+
+
+def _date_qualifier_map(text: str) -> dict[str, set[str]]:
+    """날짜(ISO) → 그 날짜에 붙어 등장한 방향 한정어 클래스 집합.
+
+    한국어 날짜 표기는 _normalize 가 먼저 ISO 로 접으므로("2026년 7월 25일까지"
+    → "2026-07-25까지") 표기와 무관하게 대칭으로 수집된다.
+    """
+    text = _normalize(text)
+    out: dict[str, set[str]] = {}
+    for m in _DATE_QUAL_RE.finditer(text):
+        out.setdefault(m.group(1), set()).add(_qual_class(m.group(2)))
     return out
 
 
@@ -320,6 +366,8 @@ def verify_answer(
     citations: list[dict] | None = None,
     allow_superseded: bool = False,
     question: str = "",
+    allowed_superseded_ids: set[str] | None = None,
+    user_fact_texts: list[str] | None = None,
 ) -> VerificationResult:
     """답변의 수치·날짜 클레임과 방향 한정어를 신뢰 소스와 대조하고 인용 버전을 점검한다.
 
@@ -330,15 +378,32 @@ def verify_answer(
             수치는 전부 '미확인'으로 판정한다.
         citations: 답변에 부착된 출처 메타(status 포함 시 버전 점검).
         allow_superseded: 사용자가 명시적으로 이력(폐지본) 조회를 요청한
-            경우 True — 폐지본 인용이 결함이 아니라 목적이 된다.
+            경우 True — 폐지본 인용이 결함이 아니라 목적이 된다. 응답 전체가
+            하나의 이력 검색에서 나온 경우(오프라인 라우터)에만 쓴다.
         question: 사용자 질문 원문. 미확인 수치가 질문에 있던 값이면
             from_question 으로 라벨링해 경고 문구를 '전제 확인'으로 조정한다
             (부정·정정 답변의 오탐 완화 — 신뢰하지도, 조용히 넘기지도 않는다).
+        allowed_superseded_ids: 이력(as_of·include_superseded) 검색이 **실제로
+            반환한** 문서의 doc_id 집합 — 이 문서들의 폐지본 인용만 허용한다.
+            전역 bool 스위치는 한 턴에 이력 검색과 현행 검색이 섞일 때(LLM
+            모드) 현행 검색 쪽에 상류 결함으로 섞여 든 폐지본 인용까지 경고를
+            꺼 버린다 — 안전장치를 끄는 스위치의 면적은 근거가 성립하는
+            범위('이력 조회가 그 문서를 반환했다')로 좁혀야 한다.
+        user_fact_texts: 사용자 제공 사실(케이스 서술의 도구 에코 등) — 지지
+            근거로는 인정하되(재서술은 정당 — 경고하면 초안마다 오탐),
+            이 계층에서만 지지되는 클레임은 from_case 로 라벨링한다.
+            "케이스는 사실"이 "케이스가 규정 클레임의 근거"로 비약하는 지점을
+            차단 대신 가시화하는 2계층 신뢰 소스 설계다.
     """
     result = VerificationResult()
 
-    trusted = _normalize("\n".join(trusted_texts))
+    strict = _normalize("\n".join(trusted_texts))
+    facts = _normalize("\n".join(user_fact_texts)) if user_fact_texts else ""
+    # 결합 텍스트가 종전의 '신뢰 소스' — 지지 판정·스니펫·방향·역할 대조에 쓴다.
+    trusted = f"{strict}\n{facts}" if facts else strict
     src_nums, src_dates = extract_claims(trusted)
+    # strict 계층(규정 근거·도구 출력)만의 클레임 — from_case 라벨의 기준선
+    strict_nums, strict_dates = extract_claims(strict) if facts else (src_nums, src_dates)
     src_quals = _qualifier_map(trusted)
     q_nums, q_dates = extract_claims(question) if question else (set(), set())
 
@@ -346,14 +411,19 @@ def verify_answer(
         if occ.kind == "date":
             supported = occ.display in src_dates
             from_q = (not supported) and occ.display in q_dates
+            from_case = supported and occ.display not in strict_dates
             evidence = _snippet(trusted, (occ.display, ""), "date") if supported else ""
         else:
             hit = next((f for f in occ.forms if f in src_nums), None)
             supported = hit is not None
             from_q = (not supported) and any(f in q_nums for f in occ.forms)
+            from_case = supported and not any(f in strict_nums for f in occ.forms)
             evidence = _snippet(trusted, hit, "numeric") if hit else ""
         result.checks.append(
-            ClaimCheck(occ.display, occ.kind, supported, evidence=evidence, from_question=from_q)
+            ClaimCheck(
+                occ.display, occ.kind, supported,
+                evidence=evidence, from_question=from_q, from_case=from_case,
+            )
         )
 
     # 방향 한정어 대조 — 수치가 지원된 클레임에 한해, 답변의 한정어 방향이
@@ -376,11 +446,30 @@ def verify_answer(
                 ClaimCheck(display, "direction", False, evidence=_snippet(trusted, key, "numeric"))
             )
 
+    # 날짜 방향 한정어 대조 — 존재 대조를 통과한 날짜에 한해, 답변의 한정어
+    # 방향("2026-07-25까지" ↔ "이후")이 근거와 뒤집혔는지 본다. 수치 방향
+    # 대조와 같은 보수 규칙: 근거에 그 날짜의 한정어가 없으면 판단하지 않는다.
+    norm_answer = _normalize(answer)
+    src_date_quals = _date_qualifier_map(trusted)
+    for m in _DATE_QUAL_RE.finditer(norm_answer):
+        d = m.group(1)
+        if d not in src_dates:
+            continue  # 날짜 자체가 미확인 — 존재 대조 축이 이미 잡았다
+        cls = _qual_class(m.group(2))
+        trusted_cls = src_date_quals.get(d, set())
+        if cls not in trusted_cls and _OPPOSITE[cls] in trusted_cls:
+            display = f"{d} {m.group(2)}"
+            if display in seen_dir:
+                continue
+            seen_dir.add(display)
+            result.checks.append(
+                ClaimCheck(display, "direction", False, evidence=_snippet(trusted, (d, ""), "date"))
+            )
+
     # 날짜 역할 대조 — 존재 대조를 통과한 날짜에 한해, 답변이 그 날짜에 부여한
     # 역할(기한/인지일)이 결정론적 도구의 역할 라벨과 일치하는지 본다.
     # 신뢰 소스에 해당 역할 라벨이 없으면(검색 근거만 있는 경우 등) 판단
     # 근거가 없으므로 플래그하지 않는다(보수적 — 오탐 방지).
-    norm_answer = _normalize(answer)
     seen_role: set[str] = set()
     for role, answer_re in _ROLE_ANSWER_RE.items():
         labels = set(_ROLE_LABEL_RE[role].findall(trusted))
@@ -399,10 +488,11 @@ def verify_answer(
             )
 
     if citations and not allow_superseded:
+        allowed = allowed_superseded_ids or set()
         result.superseded_cited = [
             c.get("doc_id") or c.get("source") or "?"
             for c in citations
-            if c.get("status") == "superseded"
+            if c.get("status") == "superseded" and c.get("doc_id") not in allowed
         ]
     return result
 

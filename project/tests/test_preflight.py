@@ -75,6 +75,32 @@ def test_tasks_check_catches_bad_schema(tmp_path):
     assert "비어 있다" in text             # 빈 체크리스트
 
 
+def test_gate_self_tests_cover_every_warning_axis():
+    """자가 테스트의 축 대칭성 — 런타임 게이트의 모든 경고 축(GateStats._AXES)에
+    대해 '심은 오류' 케이스가 존재해야 한다. 처음에는 수치 존재 축만 자가
+    테스트했는데, 그러면 방향·역할·버전 축은 고장난 채 배포될 수 있다 —
+    새 축을 추가하면 이 테스트가 자가 테스트 추가를 강제한다."""
+    from src.observability import GateStats
+
+    planted_axes = {t["axis"] for t in preflight._GATE_SELF_TESTS if not t["expect_ok"]}
+    assert planted_axes == set(GateStats._AXES), (
+        f"자가 테스트 미커버 축: {set(GateStats._AXES) - planted_axes}"
+    )
+    # 정상(clean) 케이스도 최소 1건 이상 — 오탐 방향의 자가 테스트
+    assert any(t["expect_ok"] for t in preflight._GATE_SELF_TESTS)
+
+
+def test_smoke_catches_broken_gate(monkeypatch):
+    """게이트가 모든 답변을 통과시키는 고장(항상 ok) 상태로는 배포되지 않는다."""
+    from src.verify import verifier
+
+    monkeypatch.setattr(
+        verifier, "verify_answer", lambda *a, **k: verifier.VerificationResult()
+    )
+    problems = preflight.smoke_checks()
+    assert any("검증 게이트 자가 테스트 실패" in p for p in problems)
+
+
 def test_smoke_catches_broken_redactor(monkeypatch):
     """안전장치 자가 테스트의 대칭성: 검증 게이트뿐 아니라 PII 마스킹도 고장난
     채로는 배포되지 않는다 — 심은 개인정보가 살아남으면 smoke 가 잡아야 한다."""

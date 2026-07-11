@@ -43,6 +43,13 @@
   다르게 읽는 회귀)이다. 구성이 개입하지 않는 진짜 실측은 E2EPassRate —
   포매터가 근거 밖 수치를 만들어내면 여기가 먼저 깨진다.
 
+핀의 강제 — 이 수치들은 tests/test_verify_eval.py 가 CI 실패로 강제한다:
+  이 스크립트 자체는 측정·출력만 하고 exit 0 이므로, 스크립트만 CI 에 두면
+  '핀이라 부르지만 아무것도 고정하지 않는' 상태가 된다(계기판은 있는데
+  알람이 없는 형태). 탐지율·오탐률과 함께 **표본 수 하한**도 고정한다 —
+  치환 실패는 표본에서 제외되므로, 치환 정규식이 조용히 깨지면 표본이
+  줄어든 채 1.0 이 유지된다(측정이 조용히 수축하는 실패는 통과처럼 보인다).
+
 실행:  python -m eval.verify_eval
 """
 from __future__ import annotations
@@ -53,7 +60,7 @@ import json
 import re
 
 from src import config
-from src.agent.agent import _strip_query_echo
+from src.agent.agent import _split_user_facts, _strip_query_echo
 from src.mcp_server.server import assess_adverse_event, search_regulations
 from src.rag.loader import load_documents
 from src.verify.verifier import (
@@ -246,18 +253,21 @@ def evaluate() -> dict:
         deadline = tool_out.get("deadline_date")
         if not deadline:
             continue
-        trusted = [json.dumps(_strip_query_echo(tool_out), ensure_ascii=False)]
+        # 운영(agent)과 동일한 2계층 뷰: 케이스 에코는 user_facts 로 분리된다 —
+        # 평가가 운영과 다른 신뢰 소스를 쓰면 여기서의 1.0이 운영을 보증하지 않는다.
+        stripped, facts = _split_user_facts(tool_out)
+        trusted = [json.dumps(stripped, ensure_ascii=False)]
         answer = f"이 케이스의 보고 기한은 {deadline} 입니다 (인지일 {_AWARENESS_DATE} 기준)."
-        if verify_answer(answer, trusted).ok:
+        if verify_answer(answer, trusted, user_fact_texts=facts).ok:
             date_clean += 1
         shifted = (_dt.date.fromisoformat(deadline) + _dt.timedelta(days=3)).isoformat()
         date_n += 1
-        if not verify_answer(answer.replace(deadline, shifted, 1), trusted).ok:
+        if not verify_answer(answer.replace(deadline, shifted, 1), trusted, user_fact_texts=facts).ok:
             date_detected += 1
         if deadline != _AWARENESS_DATE:
             swapped = f"이 케이스의 보고 기한은 {_AWARENESS_DATE} 입니다 (인지일 {deadline} 기준)."
             role_n += 1
-            if not verify_answer(swapped, trusted).ok:
+            if not verify_answer(swapped, trusted, user_fact_texts=facts).ok:
                 role_detected += 1
 
     return {

@@ -81,17 +81,32 @@ class GateStats:
     검증 결과는 응답 단위 감사 로그(JSON)로도 남는다 — 규제 도메인에서
     "그 답변이 그때 검증을 통과했는가"는 사후 감사의 질문이기 때문이다.
     답변 원문이 아니라 판정 요약만 남긴다(로그에 클레임 수치·판정만, PII 없음).
+
+    분모의 규율 — 전체 경고율(warn_rate)과 함께 **클레임이 있던 응답만의
+    경고율(warn_rate_checked)** 을 병기한다. "warn_rate 상승 = 품질 회귀 또는
+    오탐 증가"라는 해석에는 트래픽 믹스가 일정하다는 숨은 전제가 있다:
+    회피·무클레임 응답(checked=0)은 자명하게 통과하므로, 범위 밖 질문의
+    비중이 늘면 품질 변화가 없어도 warn_rate 가 내려간다(좋아지는 착시) —
+    분모가 섞인 지표는 추이 해석이 목적일수록 위험하다. warn_rate_checked 는
+    '검증할 것이 있던 응답'만 분모로 잡아 믹스 변화에 흔들리지 않는다.
     """
     responses: int = 0
     warned: int = 0
+    checked_responses: int = 0   # 수치·날짜 클레임이 1개 이상 있던 응답
+    warned_checked: int = 0      # 그중 경고가 붙은 응답
     by_axis: dict[str, int] = field(default_factory=dict)
 
     _AXES = ("unsupported", "direction_conflicts", "role_conflicts", "question_origin", "superseded_cited")
 
     def record(self, summary: dict) -> None:
         self.responses += 1
-        if not summary.get("ok", True):
+        warned = not summary.get("ok", True)
+        if warned:
             self.warned += 1
+        if summary.get("checked"):
+            self.checked_responses += 1
+            if warned:
+                self.warned_checked += 1
         for axis in self._AXES:
             if summary.get(axis):
                 self.by_axis[axis] = self.by_axis.get(axis, 0) + 1
@@ -101,12 +116,19 @@ class GateStats:
             "responses": self.responses,
             "warned": self.warned,
             "warn_rate": round(self.warned / self.responses, 4) if self.responses else 0.0,
+            "checked_responses": self.checked_responses,
+            "warn_rate_checked": (
+                round(self.warned_checked / self.checked_responses, 4)
+                if self.checked_responses else 0.0
+            ),
             "by_axis": dict(self.by_axis),
         }
 
     def reset(self) -> None:
         self.responses = 0
         self.warned = 0
+        self.checked_responses = 0
+        self.warned_checked = 0
         self.by_axis = {}
 
 
@@ -126,6 +148,9 @@ def record_verification(summary: dict) -> None:
                 "direction_conflicts": summary.get("direction_conflicts"),
                 "role_conflicts": summary.get("role_conflicts"),
                 "question_origin": summary.get("question_origin"),
+                # case_origin 은 경고가 아니라 등급 라벨(지지 근거가 사용자
+                # 케이스 서술뿐인 클레임) — 감사에서 '규정 근거'와 구분해 읽는다.
+                "case_origin": summary.get("case_origin"),
                 "superseded_cited": summary.get("superseded_cited"),
             },
             ensure_ascii=False,

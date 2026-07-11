@@ -134,6 +134,41 @@ def _strip_query_echo(data: Any) -> Any:
     return data
 
 
+_USER_FACT_KEYS = ("case",)  # 도구 출력 중 '사용자 제공 사실' 에코 필드
+
+
+def _split_user_facts(data: Any) -> tuple[Any, list[str]]:
+    """도구 출력에서 입력 에코를 제거하고 사용자 사실 필드(case)를 분리한다.
+
+    반환: (에코 제거된 사본, 사용자 사실 텍스트 목록). query·as_of 는 종전대로
+    버리고(전제의 승격 차단), case 는 버리는 대신 **별도 계층**으로 분리한다 —
+    검증기가 지지 근거로는 인정하되 from_case 라벨을 붙일 수 있도록.
+    '케이스는 사실이므로 신뢰 소스'라는 종전 규칙에는 "사실이라는 성질이 그
+    값을 규정 클레임의 근거로 승격시키지는 않는다"는 반례가 있었다(케이스의
+    "30일간 복용"이 답변의 "보고 기한 30일"을 지지하는 조용한 통과).
+    한계의 명시: draft_ae_report 의 draft_markdown 처럼 케이스 서술이 다른
+    필드 '안에' 재조립된 경우는 이 분리가 잡지 못한다(필드 단위 분리의 경계).
+    """
+    facts: list[str] = []
+
+    def _strip(d: Any) -> Any:
+        if isinstance(d, dict):
+            out = {}
+            for k, v in d.items():
+                if k in _ECHO_KEYS:
+                    continue
+                if k in _USER_FACT_KEYS and isinstance(v, str):
+                    facts.append(v)
+                    continue
+                out[k] = _strip(v)
+            return out
+        if isinstance(d, list):
+            return [_strip(v) for v in d]
+        return d
+
+    return _strip(data), facts
+
+
 def _is_contract_error(data: Any) -> bool:
     """도구의 명시적 에러 계약({"error", ...}) 응답인지 판정한다.
 
@@ -151,6 +186,8 @@ def _finalize(
     trusted_texts: list[str],
     allow_superseded: bool = False,
     question: str = "",
+    allowed_superseded_ids: set[str] | None = None,
+    user_facts: list[str] | None = None,
 ) -> AgentResult:
     """모든 응답이 통과하는 사후 검증 게이트 — 답변 속 수치·날짜·방향 한정어를
     신뢰 소스(검색 근거 + 결정론적 도구 출력, 질문 에코 제외)와 대조하고
@@ -163,7 +200,15 @@ def _finalize(
     question 을 넘기는 이유: 미확인 수치가 질문에 있던 값이면 '환각'이 아니라
     '전제 확인 필요'로 경고 문구를 조정한다(정정 답변의 오탐 완화).
     """
-    v = verify_answer(result.answer, trusted_texts, result.citations, allow_superseded, question=question)
+    v = verify_answer(
+        result.answer,
+        trusted_texts,
+        result.citations,
+        allow_superseded,
+        question=question,
+        allowed_superseded_ids=allowed_superseded_ids,
+        user_fact_texts=user_facts,
+    )
     if not v.ok:
         result.answer = f"{result.answer}\n\n{warning_text(v)}"
     result.verification = v.summary()
@@ -201,7 +246,13 @@ class RaAgent:
         tool_calls: list[ToolCall] = []
         raw_search_results: list[dict] = []
         trusted_texts: list[str] = []   # 사후 검증의 신뢰 소스(성공한 도구 출력 전체)
-        allow_superseded = False        # 사용자가 명시적으로 이력(폐지본) 조회를 했는가
+        # 이력(as_of·include_superseded) 검색이 '실제로 반환한' 문서 집합 —
+        # 이 문서들의 폐지본 인용만 경고에서 면제한다. 전역 bool 로 켜면 같은
+        # 턴의 현행 검색에 (상류 결함으로) 섞여 든 폐지본 인용까지 경고가 꺼져,
+        # 게이트의 버전 축이 이력 턴 동안 통째로 무장해제된다 — 안전장치를
+        # 끄는 스위치의 면적은 근거가 성립하는 문서 단위로 좁힌다.
+        history_doc_ids: set[str] = set()
+        user_facts: list[str] = []      # 도구 출력 속 사용자 사실 에코(case) — 2계층 신뢰 소스
 
         async with Client(mcp) as mcp_client:
             tools = _to_anthropic_tools(await mcp_client.list_tools())
@@ -230,8 +281,9 @@ class RaAgent:
                             citations=_collect_citations(tool_calls, raw_search_results),
                         ),
                         trusted_texts,
-                        allow_superseded,
                         question=_question_context(message, history),
+                        allowed_superseded_ids=history_doc_ids,
+                        user_facts=user_facts,
                     )
 
                 # 도구 호출 실행
@@ -247,15 +299,23 @@ class RaAgent:
                         # 도구 출력 = 검증 신뢰 소스. 단 입력 에코(query·as_of)와
                         # 에러 계약 응답은 제외 — 사용자 전제가 신뢰 소스로
                         # 승격되는 구멍을 막는다(에러 문구 속 에코 포함).
-                        trusted_texts.append(_stringify(_strip_query_echo(data)))
+                        # 케이스 에코(case)는 별도 계층으로 분리 — 지지 근거로는
+                        # 인정하되 from_case 라벨이 붙는다(사용자 서술의 승격 가시화).
+                        stripped, facts = _split_user_facts(data)
+                        trusted_texts.append(_stringify(stripped))
+                        user_facts.extend(facts)
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations" and "results" in data:
                             # 성공한 검색만 집계한다 — 형식 오류로 실패한 as_of
-                            # 호출이 allow_superseded 를 켜면, 시점 검색이 한 번도
+                            # 호출이 허용 집합을 채우면, 시점 검색이 한 번도
                             # 성공하지 않았는데 폐지본 인용 경고만 꺼진다.
                             raw_search_results.append(data)
                             if block.input.get("include_superseded") or block.input.get("as_of"):
-                                allow_superseded = True  # 이력 조회 의도 — 폐지본 인용은 결함 아님
+                                # 이력 조회 의도 — 단, 이 검색이 '실제로 반환한'
+                                # 문서의 폐지본 인용만 결함이 아니다(문서 단위 허용).
+                                history_doc_ids |= {
+                                    r["doc_id"] for r in data["results"] if r.get("doc_id")
+                                }
                         elif block.name in ("assess_adverse_event", "draft_ae_report") and data.get("basis"):
                             raw_search_results.append(data["basis"])  # 트리아지/초안 근거 규정도 출처로
                     tool_calls.append(
@@ -286,8 +346,9 @@ class RaAgent:
                     citations=_collect_citations(tool_calls, raw_search_results),
                 ),
                 trusted_texts,
-                allow_superseded,
                 question=_question_context(message, history),
+                allowed_superseded_ids=history_doc_ids,
+                user_facts=user_facts,
             )
 
     async def _safe_tool_call(self, mcp_client, name: str, args: dict, trace: Trace):
@@ -316,6 +377,7 @@ class RaAgent:
                 with timed(trace, "tool.draft_ae_report", "tool", {"args": args}):
                     data = (await mcp_client.call_tool("draft_ae_report", args)).data
                 tool_calls.append(ToolCall("draft_ae_report", args, _summarize(data)))
+                stripped, facts = _split_user_facts(data)
                 return _finalize(
                     AgentResult(
                         answer=_format_report(data),
@@ -324,8 +386,9 @@ class RaAgent:
                         citations=_collect_citations(tool_calls, [data.get("basis", {})]),
                         grounded=True,
                     ),
-                    [_stringify(_strip_query_echo(data))],
+                    [_stringify(stripped)],
                     question=resolved,
+                    user_facts=facts,
                 )
 
             if intent == "ae_triage":
@@ -334,6 +397,7 @@ class RaAgent:
                 with timed(trace, "tool.assess_adverse_event", "tool", {"args": args}):
                     data = (await mcp_client.call_tool("assess_adverse_event", args)).data
                 tool_calls.append(ToolCall("assess_adverse_event", args, _summarize(data)))
+                stripped, facts = _split_user_facts(data)
                 return _finalize(
                     AgentResult(
                         answer=_format_triage(data),
@@ -342,8 +406,9 @@ class RaAgent:
                         citations=_collect_citations(tool_calls, [data.get("basis", {})]),
                         grounded=True,
                     ),
-                    [_stringify(_strip_query_echo(data))],
+                    [_stringify(stripped)],
                     question=resolved,
+                    user_facts=facts,
                 )
 
             if intent == "deadlines":
