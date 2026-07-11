@@ -17,6 +17,10 @@ if [ -f ".env" ]; then
   set -a; . ./.env; set +a
 fi
 
-# 3) 서버 실행
+# 3) 배포 전 점검 — 데이터·설정·스모크·검증 게이트 자가 테스트 (실패 시 기동 중단)
+echo "▶ 배포 전 점검(preflight)..."
+.venv/bin/python -m src.preflight
+
+# 4) 서버 실행
 echo "▶ RA-Assistant 서버 시작 → http://127.0.0.1:8000"
 exec .venv/bin/python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000

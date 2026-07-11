@@ -28,6 +28,10 @@
   - 날짜 시프트(date shift): 도구가 계산한 보고 마감일(YYYY-MM-DD)을
     며칠 밀어 바꾼다. 날짜 클레임 축은 운영 코드에 있었지만 v1 평가는
     수치만 변조해 이 축을 측정하지 않았다 — 측정 없는 축은 없는 축이다.
+  - 날짜 역할 스왑(date role swap): 인지일과 마감일을 서로 맞바꾼다
+    ("기한은 <인지일>입니다 (인지일 <마감일>)"). 두 날짜 모두 신뢰 소스에
+    실존하므로 존재 대조만으로는 **정의상 통과**하는 변조 — v2까지의
+    사각지대였고, v3의 역할 라벨 대조 축이 잡아야 한다.
 
 지표 해석의 규율 — '핀'과 '실측'을 구분해 읽는다:
   탐지율(Swap/Offset/Direction/Native/DateShift)은 '근거에 없는 값·방향'으로
@@ -232,7 +236,11 @@ def evaluate() -> dict:
 
     # (4) 날짜 시프트 — 도구가 계산한 마감일(YYYY-MM-DD)을 밀어 바꾼다.
     # v1 평가는 수치만 변조해 날짜 축이 미측정이었다.
+    # (5) 날짜 역할 스왑 — 인지일↔마감일을 맞바꾼다. 두 날짜 모두 신뢰 소스에
+    # 실존하므로 존재 대조는 정의상 통과한다 — 역할 라벨 대조 축의 몫.
+    # (즉시보고 케이스는 마감일=인지일이라 스왑이 항등이 되어 표본에서 제외)
     date_n = date_detected = date_clean = 0
+    role_n = role_detected = 0
     for case in _load_items("pv_dataset.json"):
         tool_out = assess_adverse_event(case["case"], awareness_date=_AWARENESS_DATE)
         deadline = tool_out.get("deadline_date")
@@ -246,6 +254,11 @@ def evaluate() -> dict:
         date_n += 1
         if not verify_answer(answer.replace(deadline, shifted, 1), trusted).ok:
             date_detected += 1
+        if deadline != _AWARENESS_DATE:
+            swapped = f"이 케이스의 보고 기한은 {_AWARENESS_DATE} 입니다 (인지일 {deadline} 기준)."
+            role_n += 1
+            if not verify_answer(swapped, trusted).ok:
+                role_detected += 1
 
     return {
         "n_clean": clean_n, "clean_pass": clean_pass,
@@ -255,6 +268,7 @@ def evaluate() -> dict:
         "n_native": nat_n, "nat_detected": nat_detected,
         "n_paraphrase": para_n, "para_pass": para_pass,
         "n_date": date_n, "date_detected": date_detected, "date_clean": date_clean,
+        "n_role": role_n, "role_detected": role_detected,
         "SupersededFlagged": superseded_flagged,
         "HistoryModeAllowed": history_allowed,
         "no_claim_items": no_claim_items,
@@ -305,6 +319,7 @@ def main() -> None:
     print(row("DirectionDetection  (방향 뒤집기 이내→이후)       ", res["dir_detected"], res["n_direction"]))
     print(row("NativeSwapDetection (고유어 치환 15일→열흘)       ", res["nat_detected"], res["n_native"]))
     print(row("DateShiftDetection  (마감일 시프트 +3일)          ", res["date_detected"], res["n_date"]))
+    print(row("DateRoleSwapDetection(인지일↔마감일 역할 스왑)     ", res["role_detected"], res["n_role"]))
     print(f"폐지본 인용 감지: {'✓' if res['SupersededFlagged'] else '✗ 실패'}"
           f" · 이력 조회 모드 허용: {'✓' if res['HistoryModeAllowed'] else '✗ 실패'}")
     print("— 운영 경로 실측 —")
@@ -312,12 +327,13 @@ def main() -> None:
     for f in e2e["failures"]:
         print(f"  - E2E 실패: {f}")
     print("-" * 70)
-    print("해석: 탐지율 5축은 '근거에 없는 값·방향'으로 합성한 변조라 1.0이 정상이며,")
+    print("해석: 탐지율 6축은 '근거에 없는 값·방향·역할'로 합성한 변조라 1.0이 정상이며,")
     print("      깨지는 순간이 곧 검증기(클레임 추출·대조) 회귀다 — 회귀 고정 핀.")
     print("      CleanPassRate 도 절반은 구성적이다(발췌⊆신뢰 소스): 잡는 것은 답변/근거")
     print("      추출의 비대칭 회귀다. 구성이 개입하지 않는 실측은 E2EPassRate —")
     print("      포매터가 근거 밖 수치를 만들면 여기가 먼저 깨진다.")
-    print("      방향·고유어·날짜 축은 v1에서 측정 자체가 없던 사각지대의 가시화이며,")
+    print("      방향·고유어·날짜 축은 v1에서, 역할 스왑 축은 v2에서도 측정 자체가")
+    print("      없던 사각지대의 가시화다(역할 스왑은 존재 대조를 '정의상' 통과한다).")
     print("      ParaphrasePassRate 는 새 사전이 오탐을 만들지 않는지의 반대 방향 감시다.")
     print(f"      (수치 클레임이 없는 문항 {res['no_claim_items']}건은 변조 대상에서 제외 — 은폐가 아니라 명시)")
 

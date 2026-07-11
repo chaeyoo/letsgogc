@@ -2,7 +2,7 @@
 
 엔드포인트:
   GET  /            → 웹 챗 UI (single page)
-  GET  /health      → 실행 모드/인덱스 상태
+  GET  /health      → 실행 모드/인덱스 상태 + 검증 게이트 경고율 계기판
   POST /chat        → 사용자 메시지 → 에이전트 응답(+도구호출·출처)
   GET  /api/deadlines → 대시보드용 마감일 (부가)
 
@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from .. import config
 from ..agent.agent import RaAgent
 from ..mcp_server.server import _get_pipeline, _load_ra_tasks
+from ..observability import gate_stats
 
 agent = RaAgent()
 
@@ -71,6 +72,9 @@ async def health() -> JSONResponse:
                 "rerank_top_n": config.RERANK_TOP_N,
                 "hybrid_alpha": config.HYBRID_ALPHA,
             },
+            # 검증 게이트 운영 계기판 — 경고율이 오르면 (a) 답변 품질 회귀 또는
+            # (b) 검증기 오탐 증가(alert fatigue 위험)의 조기 신호다.
+            "verification_gate": gate_stats.snapshot(),
         }
     )
 

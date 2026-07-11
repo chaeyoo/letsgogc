@@ -15,7 +15,14 @@
      닫힌 어휘 집합(이내·이하·미만·까지 / 이상·이후·초과)이라 기계 검증이
      가능하다 — '관계 왜곡은 전부 LLM judge 몫'이라는 초기 경계 설정을
      재심사해 결정론으로 끌어온 부분이다.
-  3. 인용 버전 검증 — 답변의 출처(citation)에 폐지(superseded)된 문서가
+  3. 날짜 역할 검증 — 도구 출력에 날짜가 여러 개면(인지일·마감일·오늘)
+     답변이 두 날짜의 **역할을 맞바꿔도**("보고 기한은 <인지일>입니다") 각
+     날짜가 신뢰 소스에 존재하므로 존재 대조(1)는 통과한다. 결정론적 도구는
+     날짜를 역할 키(deadline_date·due_date·awareness_date)로 라벨링해
+     출력하므로, 답변에서 역할 키워드(기한/마감·인지일)에 직접 붙은 날짜를
+     그 역할의 라벨 집합과 대조한다 — 방향 한정어와 같은 원리로, 닫힌
+     키워드·라벨 기반이라 기계 검증이 가능한 축이다.
+  4. 인용 버전 검증 — 답변의 출처(citation)에 폐지(superseded)된 문서가
      섞였는지 확인한다(이력 조회를 명시하지 않았다면 그 자체가 결함).
 
 신뢰 소스의 정의가 이 모듈의 핵심 설계다:
@@ -102,6 +109,22 @@ _QUAL_RE = re.compile(
 )
 _OPPOSITE = {"상한": "하한", "하한": "상한"}
 
+# 날짜 역할 대조 — 결정론적 도구의 역할 라벨(직렬화된 JSON 키) ↔ 답변의 역할 키워드.
+# 답변 쪽은 키워드가 날짜에 '직접' 붙은 경우만 본다("기한: 2026-07-25",
+# "보고 기한은 2026-07-25", "(인지일 2026-07-10") — 사이에 다른 단어가 끼면
+# ("기한 규정은 2025-04-01 시행…") 역할 주장으로 보지 않는다. 보수성:
+# 신뢰 소스에 해당 역할 라벨이 없으면 판단 근거가 없으므로 플래그하지 않고,
+# 존재 대조를 통과한 날짜만 본다(미확인 날짜는 존재 대조 축이 먼저 잡는다).
+_ROLE_BRIDGE = r"[은는이가]?\s*[:：]?[\s*_\"'(（]*"
+_ROLE_LABEL_RE: dict[str, re.Pattern[str]] = {
+    "기한": re.compile(r'"(?:deadline_date|due_date)"\s*:\s*"(\d{4}-\d{2}-\d{2})"'),
+    "인지일": re.compile(r'"awareness_date"\s*:\s*"(\d{4}-\d{2}-\d{2})"'),
+}
+_ROLE_ANSWER_RE: dict[str, re.Pattern[str]] = {
+    "기한": re.compile(rf"(?:기한|마감)일?{_ROLE_BRIDGE}(\d{{4}}-\d{{2}}-\d{{2}})"),
+    "인지일": re.compile(rf"인지일{_ROLE_BRIDGE}(\d{{4}}-\d{{2}}-\d{{2}})"),
+}
+
 
 def _qual_class(word: str) -> str:
     return "상한" if word in _UPPER_WORDS else "하한"
@@ -115,8 +138,8 @@ def _normalize(text: str) -> str:
 @dataclass
 class ClaimCheck:
     claim: str        # 정규화된 클레임 표기 (예: "15일", "보름", "2026-07-25", "15일 이후")
-    kind: str         # "numeric" | "date" | "direction"
-    supported: bool   # 신뢰 소스에서 확인됐는가 (direction 은 항상 False=충돌)
+    kind: str         # "numeric" | "date" | "direction" | "role"
+    supported: bool   # 신뢰 소스에서 확인됐는가 (direction/role 은 항상 False=충돌)
     evidence: str = ""        # 지원 시 신뢰 소스의 해당 위치 스니펫(사람 대조용)
     from_question: bool = False  # 미확인 수치가 사용자 질문에 있던 값인가(전제 에코)
 
@@ -137,13 +160,18 @@ class VerificationResult:
 
     @property
     def unsupported(self) -> list[str]:
-        """근거에서 확인되지 않은 수치·날짜 클레임(방향 충돌은 별도 축)."""
-        return [c.claim for c in self.checks if not c.supported and c.kind != "direction"]
+        """근거에서 확인되지 않은 수치·날짜 클레임(방향·역할 충돌은 별도 축)."""
+        return [c.claim for c in self.checks if not c.supported and c.kind in ("numeric", "date")]
 
     @property
     def direction_conflicts(self) -> list[str]:
         """수치는 근거에 있으나 한정어 방향이 뒤집힌 클레임."""
         return [c.claim for c in self.checks if c.kind == "direction"]
+
+    @property
+    def role_conflicts(self) -> list[str]:
+        """날짜는 근거에 있으나 역할(기한↔인지일)이 도구 라벨과 어긋난 클레임."""
+        return [c.claim for c in self.checks if c.kind == "role"]
 
     @property
     def question_origin(self) -> list[str]:
@@ -152,15 +180,21 @@ class VerificationResult:
 
     @property
     def ok(self) -> bool:
-        return not self.unsupported and not self.direction_conflicts and not self.superseded_cited
+        return (
+            not self.unsupported
+            and not self.direction_conflicts
+            and not self.role_conflicts
+            and not self.superseded_cited
+        )
 
     def summary(self) -> dict:
         """API/UI 노출용 요약."""
         return {
             "ok": self.ok,
-            "checked": len([c for c in self.checks if c.kind != "direction"]),
+            "checked": len([c for c in self.checks if c.kind in ("numeric", "date")]),
             "unsupported": self.unsupported,
             "direction_conflicts": self.direction_conflicts,
+            "role_conflicts": self.role_conflicts,
             "question_origin": self.question_origin,
             "superseded_cited": self.superseded_cited,
             "checks": [c.as_dict() for c in self.checks],
@@ -322,6 +356,28 @@ def verify_answer(
                 ClaimCheck(display, "direction", False, evidence=_snippet(trusted, key, "numeric"))
             )
 
+    # 날짜 역할 대조 — 존재 대조를 통과한 날짜에 한해, 답변이 그 날짜에 부여한
+    # 역할(기한/인지일)이 결정론적 도구의 역할 라벨과 일치하는지 본다.
+    # 신뢰 소스에 해당 역할 라벨이 없으면(검색 근거만 있는 경우 등) 판단
+    # 근거가 없으므로 플래그하지 않는다(보수적 — 오탐 방지).
+    norm_answer = _normalize(answer)
+    seen_role: set[str] = set()
+    for role, answer_re in _ROLE_ANSWER_RE.items():
+        labels = set(_ROLE_LABEL_RE[role].findall(trusted))
+        if not labels:
+            continue
+        for m in answer_re.finditer(norm_answer):
+            d = m.group(1)
+            if d in labels or d not in src_dates:
+                continue  # 역할 일치, 또는 미확인 날짜(존재 대조 축이 이미 잡았다)
+            display = f"{role} {d}"
+            if display in seen_role:
+                continue
+            seen_role.add(display)
+            result.checks.append(
+                ClaimCheck(display, "role", False, evidence=", ".join(sorted(labels)))
+            )
+
     if citations and not allow_superseded:
         result.superseded_cited = [
             c.get("doc_id") or c.get("source") or "?"
@@ -355,6 +411,13 @@ def warning_text(v: VerificationResult) -> str:
             f"⚠ 방향 한정어 경고: 답변의 '{c.claim}' 은(는) 근거와 방향이 반대입니다"
             + (f" (근거: \"…{c.evidence}…\")" if c.evidence else "")
             + ". 기한·범위의 방향이 뒤집히면 수치가 맞아도 컴플라이언스 오류입니다."
+        )
+    for c in (x for x in v.checks if x.kind == "role"):
+        role, date = c.claim.split(" ", 1)
+        parts.append(
+            f"⚠ 날짜 역할 경고: 답변이 '{role}'(으)로 제시한 {date} 은(는) 근거에 존재하지만, "
+            f"도구가 해당 역할로 계산한 날짜({c.evidence})와 다릅니다. "
+            "날짜들의 역할(인지일↔마감일)이 서로 뒤바뀌지 않았는지 대조하세요."
         )
     if v.superseded_cited:
         parts.append(

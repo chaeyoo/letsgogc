@@ -20,7 +20,7 @@ from fastmcp import Client
 
 from .. import config
 from ..mcp_server.server import mcp
-from ..observability import Trace, timed
+from ..observability import Trace, record_verification, timed
 from ..pv.redactor import redact
 from ..rag.synonyms import expand_query
 from ..rag.textutil import tokenize
@@ -150,6 +150,8 @@ def _finalize(
     if not v.ok:
         result.answer = f"{result.answer}\n\n{warning_text(v)}"
     result.verification = v.summary()
+    # 운영 계기판 집계 + 감사 로그 — 경고율(alert fatigue 조기 신호)을 /health 로 상시 노출
+    record_verification(result.verification)
     return result
 
 
