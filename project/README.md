@@ -98,7 +98,7 @@ flowchart TB
 | 공고 요구 | 이 프로젝트에서 | 위치 |
 |---|---|---|
 | **RAG 최적화** | 구조 청킹+overlap, 하이브리드(벡터+BM25), **4신호 리랭킹 + 섹션 타입 prior(질의 의도 게이트)**, **질의확장(도메인 동의어)**, RAGAS식 평가 + **하이퍼파라미터 스윕/ablation 재현 스크립트** | `src/rag/`, `eval/` |
-| **제약/바이오 산업 이해**(우대) | **PV 도메인 도구**로 증명 — 이상사례 **트리아지 → 인과성(WHO-UMC) 제안 → 용어 코딩(확정/후보/미코딩 3계층, MedDRA 방식) → ICSR 보고서 초안(최소보고요건 검증)** 전 워크플로(규칙 기반+근거 부착) + **라벨 22케이스 수치 평가** | `src/pv/`, `eval/pv_eval.py` |
+| **제약/바이오 산업 이해**(우대) | **RA·PV 도메인 도구**로 증명 — RA: 규제문서 검색·마감일·제출 체크리스트 / PV: 이상사례 **트리아지 → 인과성(WHO-UMC) 제안 → 용어 코딩(확정/후보/미코딩 3계층, MedDRA 방식) → ICSR 보고서 초안(최소보고요건 검증)** 전 워크플로(규칙 기반+근거 부착) + **라벨 22케이스 수치 평가** | `src/pv/`, `src/mcp_server/server.py`, `eval/pv_eval.py` |
 | **개인정보 보호** | **PII 비식별화**(에이전트 입구+MCP 도구 계층 2겹 마스킹, 외부 API·로그 비유출 — 경계는 `\b`가 아닌 **숫자 룩어라운드**: "…는 010-…로"·"…입니다" 같은 한글 직결 표기까지 커버) | `src/pv/redactor.py` |
 | **MCP / FastMCP** | FastMCP로 RA 도구 서버 구현(**Tools+Resources+Prompts 3대 primitive**), 인메모리/stdio | `src/mcp_server/server.py` |
 | **Agentic Workflow / Function Calling** | 에이전트 tool-use 루프, MCP 도구 자율 호출 | `src/agent/agent.py` |
