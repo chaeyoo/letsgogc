@@ -100,6 +100,31 @@ def test_redact_masks_unhyphenated_rrn_and_dotted_phone():
     assert r.counts.get("주민등록번호") == 1 and r.counts.get("전화번호") == 1
 
 
+def test_redact_masks_pii_adjacent_to_hangul():
+    """한글이 직결된 표기("…는 010-…로", "주민번호900101-…입니다")도 마스킹한다.
+
+    정규식 \\b 는 한글도 \\w 로 취급하므로 조사·명사가 숫자에 직결된(한국어에서
+    가장 흔한) 표기에서는 경계가 성립하지 않아 매칭 전체가 빠진다 — 검증기의
+    날짜 추출(verifier._DATE_RE)에서 이미 배운 교훈이 마스킹 계층에는 적용되지
+    않았던 비대칭(대칭성 감사에서 발견). 검증기의 비검출은 경고 누락이지만
+    마스킹의 비검출은 곧 유출이다."""
+    r = redact("연락처는 010-1234-5678로 부탁드립니다. 주민번호900101-1234567입니다.")
+    assert "010-1234-5678" not in r.text and "900101-1234567" not in r.text
+    assert r.counts.get("전화번호") == 1 and r.counts.get("주민등록번호") == 1
+
+
+def test_redact_email_does_not_swallow_hangul():
+    """이메일 마스킹이 뒤따르는 한글("…com입니다")까지 삼키지 않는다.
+
+    [\\w.+-] 는 한글도 매칭해 마스킹 범위가 원문보다 넓어진다 — 값은 가려지니
+    유출은 아니지만, 마스킹 리포트가 원문 범위를 왜곡하면 감사가 어려워진다
+    (과잉 매칭도 경계 결함으로 센다 — 오탐을 결함으로 세는 검증기와 같은 철학)."""
+    r = redact("메일은 hong@example.com입니다")
+    assert "hong@example.com" not in r.text
+    assert r.text == "메일은 [이메일]입니다"
+    assert r.counts.get("이메일") == 1
+
+
 def test_redact_report_never_contains_original_values():
     r = redact("연락처 010-9876-5432")
     assert "9876" not in str(r.summary())  # 요약에는 유형·건수만
