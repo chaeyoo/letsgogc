@@ -116,7 +116,7 @@ def search_regulations(
 
 @mcp.tool
 def get_ra_deadlines(within_days: int = 30, task_type: str = "") -> dict:
-    """RA 담당자의 규제 업무 마감일/기한을 조회한다.
+    """RA·PV 담당자의 규제 업무 마감일/기한을 조회한다.
 
     "이번 주 마감", "곧 처리해야 할 규제 업무", "지연 위험 항목" 등
     일정·기한 관련 질문에 사용한다. 오늘 기준 within_days 이내 항목을 마감일 순으로 반환한다.

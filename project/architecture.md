@@ -23,7 +23,7 @@
 ```mermaid
 flowchart TB
     U["👤 사용자 (RA/PV 담당자)<br/>web/index.html 챗 UI"] -->|"POST /chat"| API["⚙️ FastAPI 백엔드<br/>src/api/main.py"]
-    API --> AG["🤖 RA 에이전트<br/>src/agent/agent.py<br/>(입구에서 PII 마스킹)"]
+    API --> AG["🤖 RA·PV 에이전트<br/>src/agent/agent.py<br/>(입구에서 PII 마스킹)"]
 
     AG <-->|"MCP 프로토콜<br/>(fastmcp.Client)"| MCP["🔌 FastMCP 서버<br/>src/mcp_server/server.py"]
 
@@ -55,7 +55,7 @@ flowchart TB
     AG -->|"답변+출처+도구트레이스<br/>+지연+PII마스킹+검증 결과"| API --> U
 ```
 
-**구조의 핵심 한 가지만 꼽으면**: 모델(에이전트)과 도구(RA 업무 시스템)가 **MCP 규격으로 분리**되어 있다는 점이다. 에이전트는 도구의 내부 구현을 모르고, 도구의 이름·설명(docstring)·입력 스키마만 보고 호출한다. 그래서 같은 MCP 서버를 Claude Desktop이나 Cursor 같은 다른 MCP 클라이언트에 그대로 연결할 수 있다(stdio 실행 지원: `python -m src.mcp_server.server`).
+**구조의 핵심 한 가지만 꼽으면**: 모델(에이전트)과 도구(RA·PV 업무 시스템)가 **MCP 규격으로 분리**되어 있다는 점이다. 에이전트는 도구의 내부 구현을 모르고, 도구의 이름·설명(docstring)·입력 스키마만 보고 호출한다. 그래서 같은 MCP 서버를 Claude Desktop이나 Cursor 같은 다른 MCP 클라이언트에 그대로 연결할 수 있다(stdio 실행 지원: `python -m src.mcp_server.server`).
 
 ---
 

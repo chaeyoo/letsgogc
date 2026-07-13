@@ -10,7 +10,7 @@
 
 ## 1. 문제 정의 (왜 RA·PV인가)
 
-RA 담당자는 **규제문서의 바다**에서 일한다.
+RA·PV 담당자는 **규제문서의 바다**에서 일한다.
 - "이 변경은 변경허가야 변경신고야?", "중대 이상사례는 며칠 안에 보고?", "품목허가 심사 며칠 걸려?"
   — 답은 식약처 고시·가이드라인·SOP 어딘가에 있지만 **찾는 데 시간이 걸리고**, 틀리면 **규제 리스크**가 된다.
 - 여러 제품의 **제출 기한·보고 마감**이 흩어져 있어 **놓치면 곧 컴플라이언스 사고**다.
@@ -50,8 +50,8 @@ RA 담당자는 **규제문서의 바다**에서 일한다.
 
 ```mermaid
 flowchart TB
-    U["👤 RA 담당자<br/>(웹 챗 UI)"] -->|질문| API["⚙️ FastAPI 백엔드<br/>/chat"]
-    API --> AG["🤖 RA 에이전트<br/>(Agentic Loop + Function Calling)"]
+    U["👤 RA·PV 담당자<br/>(웹 챗 UI)"] -->|질문| API["⚙️ FastAPI 백엔드<br/>/chat"]
+    API --> AG["🤖 RA·PV 에이전트<br/>(Agentic Loop + Function Calling)"]
 
     AG -->|"도구 선택·호출<br/>(MCP 프로토콜)"| MCP["🔌 FastMCP 서버<br/>RA-Assistant"]
 
@@ -90,7 +90,7 @@ flowchart TB
     VER -->|"답변 + 출처 + 도구트레이스<br/>+ 검증 결과"| API --> U
 ```
 
-**핵심 설계 포인트:** 모델(에이전트)과 도구(RA 시스템)가 **MCP 규격으로 분리**되어 있다.
+**핵심 설계 포인트:** 모델(에이전트)과 도구(RA·PV 업무 시스템)가 **MCP 규격으로 분리**되어 있다.
 → 한 번 만든 MCP 도구를 Claude Desktop·Cursor·사내 에이전트 어디서든 재사용할 수 있다(= `Hey.GC 2.0`의 확장성 원리).
 
 ## 4. 기술 스택 ↔ 채용공고 매핑
@@ -100,7 +100,7 @@ flowchart TB
 | **RAG 최적화** | 구조 청킹+overlap, 하이브리드(벡터+BM25), **4신호 리랭킹 + 섹션 타입 prior(질의 의도 게이트)**, **질의확장(도메인 동의어)**, RAGAS식 평가 + **하이퍼파라미터 스윕/ablation 재현 스크립트** | `src/rag/`, `eval/` |
 | **제약/바이오 산업 이해**(우대) | **RA·PV 도메인 도구**로 증명 — RA: 규제문서 검색·마감일·제출 체크리스트 / PV: 이상사례 **트리아지 → 인과성(WHO-UMC) 제안 → 용어 코딩(확정/후보/미코딩 3계층, MedDRA 방식) → ICSR 보고서 초안(최소보고요건 검증)** 전 워크플로(규칙 기반+근거 부착) + **라벨 22케이스 수치 평가** | `src/pv/`, `src/mcp_server/server.py`, `eval/pv_eval.py` |
 | **개인정보 보호** | **PII 비식별화**(에이전트 입구+MCP 도구 계층 2겹 마스킹, 외부 API·로그 비유출 — 경계는 `\b`가 아닌 **숫자 룩어라운드**: "…는 010-…로"·"…입니다" 같은 한글 직결 표기까지 커버) | `src/pv/redactor.py` |
-| **MCP / FastMCP** | FastMCP로 RA 도구 서버 구현(**Tools+Resources+Prompts 3대 primitive**), 인메모리/stdio | `src/mcp_server/server.py` |
+| **MCP / FastMCP** | FastMCP로 RA·PV 도구 서버 구현(**Tools+Resources+Prompts 3대 primitive**), 인메모리/stdio | `src/mcp_server/server.py` |
 | **Agentic Workflow / Function Calling** | 에이전트 tool-use 루프, MCP 도구 자율 호출 | `src/agent/agent.py` |
 | **FastAPI (백엔드)** | `/chat`·`/health` API 서빙, Pydantic 스키마 | `src/api/main.py` |
 | **Enterprise LLM API** | Anthropic Claude 연동(있으면) + 오프라인 폴백 | `src/agent/agent.py`, `src/config.py` |
