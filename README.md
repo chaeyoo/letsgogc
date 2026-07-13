@@ -16,6 +16,6 @@ GC녹십자 경력 채용(AX 풀스택 AI 엔지니어 / Forward Deployed Engine
 ## 포트폴리오 프로젝트
 | 경로 | 내용 |
 |---|---|
-| [`project/`](project/) | **RA-Assistant** — 제약 규제업무(RA)용 RAG + MCP Agentic 어시스턴트 데모. 공고 필수 스택(RAG 최적화·MCP/FastMCP·Agentic·FastAPI)을 작동하는 형태로 증명. → [프로젝트 README](project/README.md) |
+| [`project/`](project/) | **RA-Assistant** — 제약 규제업무(RA·PV)용 RAG + MCP Agentic 어시스턴트 데모. 공고 필수 스택(RAG 최적화·MCP/FastMCP·Agentic·FastAPI)을 작동하는 형태로 증명. → [프로젝트 README](project/README.md) |
 
 프로젝트 실행: `cd project && ./run.sh` → http://127.0.0.1:8000
