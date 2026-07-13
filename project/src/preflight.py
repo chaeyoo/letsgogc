@@ -208,7 +208,7 @@ def check_corpus(reg_dir: Path | None = None) -> list[str]:
 
 
 def check_tasks(tasks_file: Path | None = None) -> list[str]:
-    """RA 업무 데이터(ra_tasks.json) 스키마 — 도구가 읽다가 죽거나 오답을 내기 전에."""
+    """RA·PV 업무 데이터(ra_tasks.json) 스키마 — 도구가 읽다가 죽거나 오답을 내기 전에."""
     tasks_file = tasks_file or config.RA_TASKS_FILE
     problems: list[str] = []
     try:

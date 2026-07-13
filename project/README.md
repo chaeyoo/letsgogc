@@ -80,7 +80,7 @@ flowchart TB
     RAG --> RAG_PIPE
     RAG_PIPE --> DOCS["📄 규제문서<br/>(품목허가·GMP·라벨링·PV·임상)"]
 
-    T2 --> DB["🗂 RA 업무 데이터<br/>(마감일/체크리스트)"]
+    T2 --> DB["🗂 RA·PV 업무 데이터<br/>(마감일/체크리스트)"]
     T3 --> DB
 
     AG -->|"근거 종합 답변"| LLM["🧠 Enterprise LLM API<br/>(Claude · 선택)"]

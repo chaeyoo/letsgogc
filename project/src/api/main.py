@@ -1,4 +1,4 @@
-"""FastAPI 백엔드 — RA 어시스턴트 웹 서비스.
+"""FastAPI 백엔드 — RA·PV 어시스턴트 웹 서비스.
 
 엔드포인트:
   GET  /            → 웹 챗 UI (single page)

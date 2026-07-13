@@ -115,7 +115,7 @@
 
   <!-- RA data store -->
   <rect x="560" y="744" width="250" height="60" rx="10" fill="#16212e" stroke="#3a4b5c"/>
-  <text x="685" y="770" fill="#e6edf3" font-size="13" font-weight="600" text-anchor="middle">🗂 RA 업무 데이터</text>
+  <text x="685" y="770" fill="#e6edf3" font-size="13" font-weight="600" text-anchor="middle">🗂 RA·PV 업무 데이터</text>
   <text x="685" y="790" fill="#8aa0b4" font-size="11" text-anchor="middle">ra_tasks.json (마감일·체크리스트)</text>
 
   <!-- Documents -->

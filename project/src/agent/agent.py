@@ -1,4 +1,4 @@
-"""RA 어시스턴트 에이전트 (Agentic Workflow + Function Calling).
+"""RA·PV 어시스턴트 에이전트 (Agentic Workflow + Function Calling).
 
 에이전트가 MCP 서버의 도구를 자율적으로 호출해 사용자의 규제업무 질문에 답한다.
 
@@ -218,7 +218,7 @@ def _finalize(
 
 
 class RaAgent:
-    """RA 어시스턴트. chat() 하나로 두 모드를 투명하게 처리."""
+    """RA·PV 어시스턴트. chat() 하나로 두 모드를 투명하게 처리."""
 
     async def chat(self, message: str, history: list[dict] | None = None) -> AgentResult:
         history = history or []
