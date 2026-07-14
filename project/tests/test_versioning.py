@@ -90,3 +90,31 @@ def test_malformed_effective_date_fails_closed_under_as_of():
     # as_of 없는 기본 검색에서는 (버전 필터가 개입하지 않으므로) 여전히 검색된다
     res_all = r.retrieve("심사 기간", top_k=5, rerank_n=5)
     assert "BAD" in {s.chunk.doc_id for s in res_all}
+
+
+def test_as_of_two_tier_chain_returns_exactly_then_active(tmp_path):
+    """2단 폐지 체인(v1→v2→현행 v3)에서 as_of 는 '그 시점의 현행' 정확히
+    한 버전만 반환한다. (v8)
+
+    superseded_by 는 '직전 후속본' 규약이다 — 구간 판정 [시행일, 후속본
+    시행일)이 성립하는 전제. preflight 의 체인 검사(다단 순회)와 같은 규약을
+    리트리버 쪽에서도 회귀 테스트로 고정한다(둘이 반대 규약을 요구하면 다단
+    이력을 넣는 순간 어느 쪽으로 써도 한쪽이 깨진다)."""
+    from src.rag.pipeline import RagPipeline
+
+    def _doc(name: str, doc_id: str, eff: str, extra: str = "") -> None:
+        (tmp_path / name).write_text(
+            f"---\ndoc_id: {doc_id}\ntitle: 보고 기한 규정\nversion: '{doc_id[-1]}'\n"
+            f"effective_date: {eff}\n{extra}---\n\n## 보고 기한\n이상사례 보고 기한 규정 본문.\n",
+            encoding="utf-8",
+        )
+
+    _doc("v1.md", "R-V1", "2020-01-01", "status: superseded\nsuperseded_by: R-V2\n")
+    _doc("v2.md", "R-V2", "2022-01-01", "status: superseded\nsuperseded_by: R-V3\n")
+    _doc("v3.md", "R-V3", "2024-01-01")
+    p = RagPipeline(reg_dir=tmp_path).build()
+
+    for as_of, expected in [("2021-06-01", "R-V1"), ("2023-06-01", "R-V2"), ("2025-06-01", "R-V3")]:
+        res = p.retriever.retrieve("이상사례 보고 기한", top_k=8, rerank_n=8, as_of=as_of)
+        ids = {s.chunk.doc_id for s in res}
+        assert ids == {expected}, f"as_of={as_of}: {ids} (기대: {expected} 단독)"

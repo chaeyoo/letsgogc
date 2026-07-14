@@ -160,3 +160,47 @@ def test_config_check_catches_contradictions(monkeypatch):
     monkeypatch.setattr(config, "CHUNK_OVERLAP", 700)  # chunk_size(500)보다 큼
     problems = preflight.check_config()
     assert any("CHUNK_OVERLAP" in p for p in problems)
+
+
+def test_corpus_check_accepts_valid_two_tier_chain(tmp_path):
+    """정당한 2단 폐지 체인(구판→중간판(폐지)→현행)은 결함이 아니다. (v8)
+
+    superseded_by 규약은 '직전 후속본'이다 — 리트리버의 as_of 구간 판정
+    [시행일, 후속본 시행일)이 이를 전제하는데, 종전 preflight 는 '후속본이
+    폐지본이면 결함'이라 정반대 규약을 요구했다(다단 이력을 넣는 순간 어느
+    쪽으로 써도 한쪽이 깨지는 잠복 상충)."""
+    _write_doc(tmp_path, "v1.md", {"doc_id": "R-V1", "title": "t", "version": "1.0",
+                                   "effective_date": "2020-01-01", "status": "superseded",
+                                   "superseded_by": "R-V2"})
+    _write_doc(tmp_path, "v2.md", {"doc_id": "R-V2", "title": "t", "version": "2.0",
+                                   "effective_date": "2022-01-01", "status": "superseded",
+                                   "superseded_by": "R-V3"})
+    _write_doc(tmp_path, "v3.md", {"doc_id": "R-V3", "title": "t", "version": "3.0",
+                                   "effective_date": "2024-01-01"})
+    assert preflight.check_corpus(tmp_path) == []
+
+
+def test_corpus_check_catches_chain_cycle_and_dangling_tail(tmp_path):
+    """순환 체인과, 중간에서 끊기는 체인(폐지 종점)은 결함으로 잡는다. (v8)"""
+    _write_doc(tmp_path, "a.md", {"doc_id": "R-A", "title": "t", "version": "1",
+                                  "effective_date": "2020-01-01", "status": "superseded",
+                                  "superseded_by": "R-B"})
+    _write_doc(tmp_path, "b.md", {"doc_id": "R-B", "title": "t", "version": "2",
+                                  "effective_date": "2021-01-01", "status": "superseded",
+                                  "superseded_by": "R-A"})  # 순환
+    problems = preflight.check_corpus(tmp_path)
+    assert any("순환" in p for p in problems)
+
+
+def test_corpus_check_catches_mid_chain_date_inversion(tmp_path):
+    """다단 체인 중간 링크의 시행일 역전도 잡는다. (v8)"""
+    _write_doc(tmp_path, "v1.md", {"doc_id": "R-V1", "title": "t", "version": "1",
+                                   "effective_date": "2020-01-01", "status": "superseded",
+                                   "superseded_by": "R-V2"})
+    _write_doc(tmp_path, "v2.md", {"doc_id": "R-V2", "title": "t", "version": "2",
+                                   "effective_date": "2023-01-01", "status": "superseded",
+                                   "superseded_by": "R-V3"})
+    _write_doc(tmp_path, "v3.md", {"doc_id": "R-V3", "title": "t", "version": "3",
+                                   "effective_date": "2022-01-01"})  # 중간 링크 역전
+    problems = preflight.check_corpus(tmp_path)
+    assert any("늦지 않다" in p for p in problems)

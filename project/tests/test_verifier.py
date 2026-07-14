@@ -550,3 +550,62 @@ def test_gate_stats_counts_case_label():
     gs.record({"ok": True, "checked": 1})
     snap = gs.snapshot()
     assert snap["case_labeled"] == 1 and snap["warned"] == 0
+
+
+# ---------------------------------------------------------------------------
+# v8 — 부분 날짜의 방향·역할 축, 하이픈 범위, 방향 어휘 '이전'·'부터'
+# ---------------------------------------------------------------------------
+def test_partial_date_role_swap_detected():
+    """부분 날짜 표기("7월 25일")로 역할을 뒤바꿔도 역할 축이 발화한다. (v8)
+
+    존재 축은 접미 대조로 부분 표기를 지지하는데 역할 축이 ISO 만 수집하면,
+    두 날짜가 모두 근거에 실존하는 역할 스왑이 그 표기로만 조용히 통과한다."""
+    tool = '{"awareness_date":"2026-07-10","deadline_date":"2026-07-25"}'
+    r = verify_answer("보고 기한은 7월 10일입니다 (인지일 7월 25일)", [tool])
+    assert not r.ok and len(r.role_conflicts) == 2
+
+
+def test_partial_date_role_correct_no_flag():
+    tool = '{"awareness_date":"2026-07-10","deadline_date":"2026-07-25"}'
+    r = verify_answer("보고 기한은 7월 25일입니다 (인지일 7월 10일)", [tool])
+    assert r.ok and not r.role_conflicts
+
+
+def test_partial_date_direction_flip_detected():
+    """부분 날짜 표기의 방향 뒤집기("7월 25일 이후" vs 근거 "…까지")를 잡는다. (v8)"""
+    r = verify_answer("7월 25일 이후에 제출하면 됩니다", ["제출 기한은 2026-07-25까지"])
+    assert not r.ok and r.direction_conflicts == ["7월 25일 이후"]
+
+
+def test_partial_date_direction_same_no_flag():
+    r = verify_answer("7월 25일까지 제출하세요", ["제출 기한은 2026-07-25까지"])
+    assert r.ok and not r.direction_conflicts
+
+
+def test_hyphen_range_both_bounds_collected():
+    """하이픈 범위("10-15일")는 상·하한이 모두 수집·대조된다. (v8)
+
+    '-' 를 구분자에서 뺀 대가로 상한('15일' — 앞이 '-')까지 룩비하인드에
+    걸려 표현 전체가 검증 사각지대였다(위조 하한 포함 조용한 통과)."""
+    r = verify_answer("처리기간은 10-15일입니다", ["처리기간은 15일이다"])
+    assert not r.ok and r.unsupported == ["10일"]
+    ok = verify_answer("처리기간은 10-15일입니다", ["처리기간은 10-15일이다"])
+    assert ok.ok
+
+
+def test_hyphen_range_does_not_pollute_dates():
+    """날짜+'일' 접미("2026-07-25일")가 하이픈 범위로 오추출되지 않는다. (v8)"""
+    r = verify_answer("기한은 2026-07-25일입니다", ['{"deadline_date":"2026-07-25"}'])
+    assert r.ok and not r.unsupported
+
+
+def test_direction_word_ijeon_detected():
+    """'이전'(상한 어휘) 뒤집기 — "15일 이전" vs 근거 "15일 이후". (v8)"""
+    r = verify_answer("15일 이전에 보고해야 합니다", ["인지일로부터 15일 이후 보고한다"])
+    assert not r.ok and r.direction_conflicts == ["15일 이전"]
+
+
+def test_direction_word_buteo_detected():
+    """'부터'(하한 기산점) 뒤집기 — "2026-07-25부터" vs 근거 "…까지". (v8)"""
+    r = verify_answer("2026-07-25부터 제출 가능합니다", ["제출 기한은 2026-07-25까지"])
+    assert not r.ok and len(r.direction_conflicts) == 1

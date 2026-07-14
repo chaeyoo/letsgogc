@@ -19,8 +19,8 @@ import pytest
 from eval.verify_eval import _e2e_pass_rate, evaluate
 
 # 표본 수 하한 — 현재 실측(n_swap=20, n_offset=23, n_direction=16, n_native=4,
-# n_date=8, n_role=5, n_clean=32, n_paraphrase=2)에서 보수적 여유를 둔 값.
-# 코퍼스·평가셋이 커지면 늘어나는 방향만 정상이다.
+# n_date=8, n_role=5, n_partial_role=5, n_range=4, n_clean=32, n_paraphrase=2)
+# 에서 보수적 여유를 둔 값. 코퍼스·평가셋이 커지면 늘어나는 방향만 정상이다.
 _MIN_N = {
     "n_clean": 30,
     "n_swap": 15,
@@ -30,6 +30,8 @@ _MIN_N = {
     "n_paraphrase": 1,
     "n_date": 6,
     "n_role": 4,
+    "n_partial_role": 4,  # v8 — 부분 날짜 표기 역할 스왑
+    "n_range": 3,         # v8 — 하이픈 범위 하한 위조
     "n_partial": 6,
 }
 
@@ -52,6 +54,8 @@ def test_detection_axes_are_pinned_at_full(res):
     assert res["nat_detected"] == res["n_native"], "고유어 치환 탐지 회귀"
     assert res["date_detected"] == res["n_date"], "날짜 시프트 탐지 회귀"
     assert res["role_detected"] == res["n_role"], "날짜 역할 스왑 탐지 회귀"
+    assert res["partial_role_detected"] == res["n_partial_role"], "부분 날짜 역할 스왑 탐지 회귀 (v8)"
+    assert res["range_detected"] == res["n_range"], "하이픈 범위 하한 위조 탐지 회귀 (v8)"
     assert res["partial_detected"] == res["n_partial"], "부분 날짜 시프트 탐지 회귀"
 
 

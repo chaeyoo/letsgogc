@@ -113,18 +113,23 @@ class HashingEmbedder:
     def embed(self, text: str) -> SparseVec:
         if not self._fitted:
             raise RuntimeError("embed() 전에 fit()을 먼저 호출해야 한다.")
-        tf: Counter[int] = Counter()
-        signs: dict[int, float] = {}
+        # 부호 해시의 정석: 버킷마다 sign*count 를 '누적'한다 — 반대 부호로
+        # 충돌한 토큰이 서로 상쇄되는 것이 signed hashing 의 존재 이유다.
+        # 종전 구현은 |tf| 를 합산하고 부호는 '마지막 토큰'이 덮어써서, 같은
+        # bag-of-words 인데 토큰 순서에 따라 벡터 성분의 부호가 뒤집혔다
+        # (n_buckets=1 에서 "tok0 tok1" 과 "tok1 tok0" 의 코사인이 -1 — v8).
+        signed: dict[int, float] = {}
         for tok in tokenize(text):
             idx, sign = self._bucket(tok)
-            tf[idx] += 1
-            signs[idx] = sign
-        if not tf:
-            return {}
+            signed[idx] = signed.get(idx, 0.0) + sign
         vec: SparseVec = {}
-        for idx, freq in tf.items():
+        for idx, s in signed.items():
+            if s == 0.0:  # 완전 상쇄된 버킷은 성분 없음
+                continue
             idf = self._idf.get(idx, 1.0)
-            vec[str(idx)] = signs[idx] * (1.0 + math.log(freq)) * idf
+            vec[str(idx)] = math.copysign((1.0 + math.log(abs(s))) * idf, s)
+        if not vec:
+            return {}
         norm = math.sqrt(sum(w * w for w in vec.values())) or 1.0
         return {t: w / norm for t, w in vec.items()}
 

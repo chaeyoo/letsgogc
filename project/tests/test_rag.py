@@ -56,3 +56,36 @@ if __name__ == "__main__":
     test_retrieval_relevance(pipe)
     test_citations_carry_version(pipe)
     print("스모크 테스트 통과 ✅ (자세한 검증은 pytest 로 실행)")
+
+
+# ---------------------------------------------------------------------------
+# v8 — 동의어 표제어 경계·HashingEmbedder 부호 누적
+# ---------------------------------------------------------------------------
+def test_expand_query_english_terms_need_word_boundary():
+    """영문 표제어는 단어 경계에서만 발화한다 — 합성어 내부 매칭은 주제 표류. (v8)
+
+    "audit finding"의 'ind'가 임상시험 확장을, "PVC 포장재"의 'pv'가 약물감시
+    확장을 일으켜 무관 문서로 순위가 밀리던 오탐."""
+    from src.rag.synonyms import expand_query
+    assert expand_query("audit finding 대응 방안") == "audit finding 대응 방안"
+    assert expand_query("PVC 포장재 기준") == "PVC 포장재 기준"
+    # 경계가 있으면 여전히 확장된다
+    assert "약물감시" in expand_query("PV 업무 범위")
+    assert "임상시험계획 승인" in expand_query("IND 제출 일정")
+
+
+def test_expand_query_korean_terms_keep_substring_match():
+    """한글 표제어는 조사·활용 직결("심각하게")이 정상이라 부분 매칭을 유지한다. (v8)"""
+    from src.rag.synonyms import expand_query
+    assert "중대한" in expand_query("부작용이 심각하게 나타나면")
+
+
+def test_hashing_embedder_is_order_invariant():
+    """HashingEmbedder 는 bag-of-words — 토큰 순서가 벡터를 바꾸면 안 된다. (v8)
+
+    종전에는 버킷 부호를 '마지막 토큰'이 덮어써서, 반대 부호 토큰이 충돌한
+    버킷의 성분이 순서에 따라 반전됐다(signed hashing 의 상쇄 원리 위반)."""
+    from src.rag.embedder import HashingEmbedder
+    e = HashingEmbedder(n_buckets=1)  # 모든 토큰이 한 버킷에 충돌하는 극단 케이스
+    e.fit(["tok0 tok1"])
+    assert e.embed("tok0 tok1") == e.embed("tok1 tok0")
