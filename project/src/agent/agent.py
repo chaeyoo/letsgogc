@@ -556,22 +556,32 @@ def _redact_history(history: list[dict]) -> list[dict]:
     명시적으로 처리하는 '예상된 입력 형태'인데, 마스킹만 문자열 표기에서
     성립하는 것은 표기의 우회였다(정규식 \\b 경계가 한글 직결 표기에서만
     깨지던 v6 발견 C 와 동형 — 이력 리스트형 콘텐츠 속 개인정보가 마스킹
-    없이 외부 LLM API 로 나가는 경로, v7 발견). 그 외 타입(비문자열 스칼라
-    등)은 텍스트가 아니므로 그대로 둔다.
+    없이 외부 LLM API 로 나가는 경로, v7 발견). 블록의 텍스트 표기는 두 키다
+    — text(텍스트 블록)와 **content(tool_result 블록의 문자열 본문)**: raw
+    transcript 를 이력으로 되돌려 보내는 사용에서 tool_result 표기만 빠지면
+    같은 우회가 한 키 이름 차이로 반복된다(v7 리뷰 잔여분). 그 외 타입
+    (비문자열 스칼라 등)은 텍스트가 아니므로 그대로 둔다.
     """
+
+    def _redact_block(b: Any) -> Any:
+        if not isinstance(b, dict):
+            return b
+        out_b = dict(b)
+        if isinstance(out_b.get("text"), str):
+            out_b["text"] = redact(out_b["text"]).text
+        if isinstance(out_b.get("content"), str):  # tool_result 블록의 문자열 본문
+            out_b["content"] = redact(out_b["content"]).text
+        elif isinstance(out_b.get("content"), list):  # 중첩 블록 리스트
+            out_b["content"] = [_redact_block(x) for x in out_b["content"]]
+        return out_b
+
     out: list[dict] = []
     for turn in history:
         content = turn.get("content")
         if isinstance(content, str):
             out.append({**turn, "content": redact(content).text})
         elif isinstance(content, list):
-            blocks = []
-            for b in content:
-                if isinstance(b, dict) and isinstance(b.get("text"), str):
-                    blocks.append({**b, "text": redact(b["text"]).text})
-                else:
-                    blocks.append(b)
-            out.append({**turn, "content": blocks})
+            out.append({**turn, "content": [_redact_block(b) for b in content]})
         else:
             out.append(turn)
     return out

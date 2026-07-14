@@ -93,8 +93,10 @@ def search_regulations(
             # 에러 문구에 예시 '날짜'를 넣지 않는다 — 에러 응답이 어딘가에서
             # 텍스트로 소비될 때 예시 날짜가 실제 날짜 클레임처럼 읽히는 것을
             # 원천 차단(형식은 포맷 문자열로 충분히 전달된다).
+            # 형식이 틀린 as_of 는 임의 문자열일 수 있다 — 에러 에코도 마스킹
+            # (필터 인자 에코와 같은 근거: 에러 문구에 원문이 실려 나간다).
             return {
-                "error": f"as_of '{as_of}' 가 YYYY-MM-DD 형식이 아님",
+                "error": f"as_of '{redact(as_of).text}' 가 YYYY-MM-DD 형식이 아님",
                 "expected": "YYYY-MM-DD",
             }
     ctx = _get_pipeline().retrieve(
@@ -365,12 +367,14 @@ def pv_case_intake(case_description: str) -> str:
 @mcp.resource("regulation://{doc_id}")
 def get_regulation_document(doc_id: str) -> str:
     """규제문서 원문 전체를 doc_id(예: REG-003)로 조회한다."""
+    from ..pv.redactor import redact
     from ..rag.loader import load_documents
 
     for doc in load_documents(config.REG_DIR):
         if doc.doc_id.lower() == doc_id.lower():
             return f"# {doc.title}\n\n{doc.text}"
-    return f"문서를 찾을 수 없음: {doc_id}"
+    # 미매칭 doc_id 는 임의 문자열일 수 있다 — 에러 에코도 마스킹(도구 인자와 동일 근거)
+    return f"문서를 찾을 수 없음: {redact(doc_id).text}"
 
 
 @mcp.tool

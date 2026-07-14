@@ -96,6 +96,15 @@ def test_free_text_args_are_masked_at_tool_layer():
     p = pv_case_intake("환자 김철수님(010-1234-5678)이 복용 후 입원")
     assert "010-1234-5678" not in p and "김철수" not in p
     assert "[전화번호]" in p
+    # 날짜 형식 인자의 에러 에코 — 형식이 틀린 as_of 는 임의 문자열일 수 있다
+    bad_as_of = search_regulations("보고 기한", as_of="김철수님 010-1234-5678")
+    assert "error" in bad_as_of and "010-1234-5678" not in bad_as_of["error"]
+    assert "김철수" not in bad_as_of["error"]
+    # Resource 의 미매칭 doc_id 에러 에코도 같은 근거로 마스킹
+    from src.mcp_server.server import get_regulation_document
+
+    missing = get_regulation_document("김철수님 010-1234-5678")
+    assert "010-1234-5678" not in missing and "김철수" not in missing
 
 
 def test_list_documents_contract():
