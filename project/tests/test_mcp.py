@@ -78,6 +78,35 @@ def test_pv_intake_prompt_encodes_sop():
         assert tool in p
 
 
+def test_free_text_args_are_masked_at_tool_layer():
+    """도구 계층 마스킹의 면적 — 'MCP 도구 계층은 모든 자유 텍스트 인자를
+    마스킹한다'는 주장이 PV 도구 2종에서만 참이던 범위 과확장의 봉합(v7).
+    stdio 단독 사용 시 이 인자들은 에이전트 입구 마스킹을 거치지 않는다:
+    query 는 voyage 임베더 구성에서 외부 API 로 송신되고, 필터 인자는 미매칭
+    에러 문구에 그대로 에코되며, Prompt 는 원문을 LLM 프롬프트에 삽입한다."""
+    # 검색 query — 결과 에코(query)에 원문 개인정보가 남으면 안 된다
+    out = search_regulations("김철수님 010-1234-5678 케이스 신속보고 규정", top_n=1)
+    assert "010-1234-5678" not in out["query"] and "김철수" not in out["query"]
+    # 필터 인자 — 미매칭 에러 에코에 원문 개인정보가 남으면 안 된다
+    bad = get_ra_deadlines(task_type="담당자 010-1234-5678")
+    assert "error" in bad and "010-1234-5678" not in bad["error"]
+    bad2 = get_submission_checklist("김철수님 요청 체크리스트")
+    assert "error" in bad2 and "김철수" not in bad2["error"]
+    # Prompt — SOP 프롬프트에 삽입되기 전에 마스킹
+    p = pv_case_intake("환자 김철수님(010-1234-5678)이 복용 후 입원")
+    assert "010-1234-5678" not in p and "김철수" not in p
+    assert "[전화번호]" in p
+    # 날짜 형식 인자의 에러 에코 — 형식이 틀린 as_of 는 임의 문자열일 수 있다
+    bad_as_of = search_regulations("보고 기한", as_of="김철수님 010-1234-5678")
+    assert "error" in bad_as_of and "010-1234-5678" not in bad_as_of["error"]
+    assert "김철수" not in bad_as_of["error"]
+    # Resource 의 미매칭 doc_id 에러 에코도 같은 근거로 마스킹
+    from src.mcp_server.server import get_regulation_document
+
+    missing = get_regulation_document("김철수님 010-1234-5678")
+    assert "010-1234-5678" not in missing and "김철수" not in missing
+
+
 def test_list_documents_contract():
     out = list_regulation_documents()
     assert out["count"] >= 12

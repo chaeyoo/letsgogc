@@ -75,6 +75,32 @@ def test_tasks_check_catches_bad_schema(tmp_path):
     assert "비어 있다" in text             # 빈 체크리스트
 
 
+def test_tasks_check_catches_stale_deadlines(tmp_path):
+    """시한부 샘플 데이터의 부패 — 마감일이 전부 과거가 되면 '임박한 마감' 데모가
+    전항목 연체 목록으로 조용히 죽는다(스키마는 유효하므로 형식 검사만으로는
+    영원히 통과). 전건 과거일 때만 결함으로 센다 — 과거 1건은 '지남/긴급' 연출용
+    의도된 데이터라 오탐이 되면 안 된다(리포 데이터 통과는 별도 테스트가 고정)."""
+    import datetime as dt
+    import json as _json
+
+    past = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    future = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+    row = {"item": "x", "type": "t", "owner": "o", "status": "s"}
+    f = tmp_path / "ra_tasks.json"
+
+    f.write_text(_json.dumps({
+        "deadlines": [{**row, "due_date": past}, {**row, "due_date": past}],
+        "checklists": {"a": ["1"]},
+    }), encoding="utf-8")
+    assert any("모두 과거" in p for p in preflight.check_tasks(f))
+
+    f.write_text(_json.dumps({
+        "deadlines": [{**row, "due_date": past}, {**row, "due_date": future}],
+        "checklists": {"a": ["1"]},
+    }), encoding="utf-8")
+    assert not any("모두 과거" in p for p in preflight.check_tasks(f))
+
+
 def test_gate_self_tests_cover_every_warning_axis():
     """자가 테스트의 축 대칭성 — 런타임 게이트의 모든 경고 축(GateStats._AXES)에
     대해 '심은 오류' 케이스가 존재해야 한다. 처음에는 수치 존재 축만 자가
@@ -112,6 +138,17 @@ def test_smoke_catches_broken_redactor(monkeypatch):
     )
     problems = preflight.smoke_checks()
     assert any("PII 마스킹 자가 테스트 실패" in p for p in problems)
+
+
+def test_smoke_catches_broken_history_block_masking(monkeypatch):
+    """이력 마스킹의 표기 변형 자가 테스트 — 블록 리스트 표기(content=[{type:
+    text}])의 마스킹이 죽은 채로는 배포되지 않는다. 문자열 표기 자가 테스트만
+    있으면 블록 경로의 고장은 신호 없이 통과한다(표기 변형 커버리지의 대칭)."""
+    from src.agent import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_redact_history", lambda history: history)  # 원문 통과 고장
+    problems = preflight.smoke_checks()
+    assert any("블록 표기" in p for p in problems)
 
 
 def test_config_check_catches_contradictions(monkeypatch):

@@ -64,7 +64,8 @@ def search_regulations(
     버전을 반환한다 — 이후 개정으로 폐지된 버전이라도 당시 현행이었다면 포함된다.
 
     Args:
-        query: 검색할 질문/키워드 (예: "중대한 이상사례 보고 기한").
+        query: 검색할 질문/키워드 (예: "중대한 이상사례 보고 기한"). 개인정보가
+            섞여 있으면 검색 전에 마스킹된다(아래 참고).
         top_n: 반환할 근거 문단 수 (기본 3, 유효 범위 1~5 — 범위 밖 값은 경계로
             보정된다. 보정을 명시하는 이유: 문서화되지 않은 클램프는 '10건을
             요청했는데 5건이 온' 호출자에게 조용한 축소로 보인다).
@@ -77,6 +78,14 @@ def search_regulations(
         조용히 무시하고 현행 기준으로 답하면 사용자는 '그 시점 규정'을 받았다고
         믿게 된다(자신 있는 오답). 명시적 에러라야 에이전트가 정정 재시도한다.
     """
+    from ..pv.redactor import redact
+
+    # 심층방어: query 도 자유 텍스트 인자다. 에이전트 경유 시에는 이미 마스킹된
+    # 메시지에서 파생되지만, stdio 단독 사용(Claude Desktop 등)에서는 외부에서
+    # 직접 들어온다 — 특히 EMBEDDER_KIND=voyage 구성이면 질의 원문이 외부 임베딩
+    # API 로 그대로 송신된다. PV 도구 인자만 마스킹하던 것은 "도구 계층은 모든
+    # 자유 텍스트 인자를 마스킹한다" 주장의 범위 과확장이었다(v7 발견).
+    query = redact(query).text
     if as_of:
         try:
             _dt.date.fromisoformat(as_of)
@@ -84,8 +93,10 @@ def search_regulations(
             # 에러 문구에 예시 '날짜'를 넣지 않는다 — 에러 응답이 어딘가에서
             # 텍스트로 소비될 때 예시 날짜가 실제 날짜 클레임처럼 읽히는 것을
             # 원천 차단(형식은 포맷 문자열로 충분히 전달된다).
+            # 형식이 틀린 as_of 는 임의 문자열일 수 있다 — 에러 에코도 마스킹
+            # (필터 인자 에코와 같은 근거: 에러 문구에 원문이 실려 나간다).
             return {
-                "error": f"as_of '{as_of}' 가 YYYY-MM-DD 형식이 아님",
+                "error": f"as_of '{redact(as_of).text}' 가 YYYY-MM-DD 형식이 아님",
                 "expected": "YYYY-MM-DD",
             }
     ctx = _get_pipeline().retrieve(
@@ -130,6 +141,12 @@ def get_ra_deadlines(within_days: int = 30, task_type: str = "") -> dict:
         task_type 이 데이터에 없는 유형이면 {"error", "available": [...]} — 매칭 0건과
         구분되는 명시적 에러다.
     """
+    from ..pv.redactor import redact
+
+    # 필터 인자도 자유 텍스트다 — 미매칭 시 에러 문구에 그대로 에코되므로,
+    # 개인정보가 들어오면 에코 경로로 노출된다(마스킹해도 매칭 의미는 불변:
+    # 유효한 유형명에는 PII 패턴이 없다).
+    task_type = redact(task_type).text if task_type else task_type
     data = _load_ra_tasks()
     # 존재하지 않는 유형은 빈 목록이 아니라 에러로 답한다 — 오타 난 필터에
     # "임박한 마감이 없습니다"라고 답하는 것은 '자신 있는 오답'이다(조용한 빈
@@ -164,6 +181,9 @@ def get_submission_checklist(category: str) -> dict:
     Returns:
         {"category", "items": [...]} 또는 미지원 시 {"error", "available": [...]}.
     """
+    from ..pv.redactor import redact
+
+    category = redact(category).text if category else category  # 에러 에코 경로 방어(위와 동일)
     data = _load_ra_tasks()
     checklists = data["checklists"]
     if category not in checklists:
@@ -319,7 +339,16 @@ def draft_ae_report(
 # ---------------------------------------------------------------------------
 @mcp.prompt
 def pv_case_intake(case_description: str) -> str:
-    """PV 이상사례 케이스 접수 SOP 프롬프트 — 접수부터 보고서 초안까지의 표준 절차."""
+    """PV 이상사례 케이스 접수 SOP 프롬프트 — 접수부터 보고서 초안까지의 표준 절차.
+
+    케이스 서술 속 개인정보는 프롬프트에 삽입되기 전에 마스킹된다 — SOP 를
+    클라이언트 무관하게 배포한다는 프롬프트가 정작 PII 경계 절차만 빼고
+    배포되면, 어느 클라이언트가 붙어도 '같은 절차로' 원문 개인정보를 LLM 에
+    싣게 된다(도구 인자 마스킹과 같은 심층방어를 Prompt primitive 에도 적용).
+    """
+    from ..pv.redactor import redact
+
+    case_description = redact(case_description).text
     return (
         "다음 이상사례 케이스를 PV 접수 SOP에 따라 처리하라.\n\n"
         f"케이스: {case_description}\n\n"
@@ -338,12 +367,14 @@ def pv_case_intake(case_description: str) -> str:
 @mcp.resource("regulation://{doc_id}")
 def get_regulation_document(doc_id: str) -> str:
     """규제문서 원문 전체를 doc_id(예: REG-003)로 조회한다."""
+    from ..pv.redactor import redact
     from ..rag.loader import load_documents
 
     for doc in load_documents(config.REG_DIR):
         if doc.doc_id.lower() == doc_id.lower():
             return f"# {doc.title}\n\n{doc.text}"
-    return f"문서를 찾을 수 없음: {doc_id}"
+    # 미매칭 doc_id 는 임의 문자열일 수 있다 — 에러 에코도 마스킹(도구 인자와 동일 근거)
+    return f"문서를 찾을 수 없음: {redact(doc_id).text}"
 
 
 @mcp.tool

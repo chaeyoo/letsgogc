@@ -239,3 +239,30 @@ async def test_unmatched_checklist_out_of_corpus_stays_coherent():
     r = await agent.chat("ISO 9001 인증 체크리스트 줘")
     assert "지원:" in r.answer
     assert "아래는 규정 검색 결과" not in r.answer
+
+
+def test_redact_history_masks_block_content():
+    """이력 마스킹의 표기 변형 — content 가 문자열이 아니라 anthropic 블록
+    리스트(content=[{"type":"text",...}])여도 PII 가 마스킹되어야 한다.
+    문자열 표기만 마스킹하고 리스트 표기를 원문 통과시키면, 그 표기로 들어온
+    개인정보가 외부 LLM API 로 그대로 나간다(v7 발견 — _user_texts 는 블록
+    표기를 예상 입력으로 처리하는데 마스킹만 그 표기를 몰랐다)."""
+    from src.agent.agent import _redact_history
+
+    turns = _redact_history([
+        {"role": "user", "content": "주민번호는 900101-1234567입니다"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "보호자 연락처는 010-9876-5432로 부탁드립니다"},
+            # tool_result 블록의 문자열 본문(content 키)도 텍스트 표기다 —
+            # raw transcript 를 이력으로 되돌려 보내는 사용에서 이 키만 빠지면
+            # 같은 우회가 키 이름 차이로 반복된다.
+            {"type": "tool_result", "tool_use_id": "t1", "content": "환자 전화 010-1111-2222"},
+        ]},
+        {"role": "user", "content": 42},  # 비문자열 스칼라 — 텍스트 아님, 그대로
+    ])
+    assert "900101-1234567" not in turns[0]["content"]
+    assert "010-9876-5432" not in turns[1]["content"][0]["text"]
+    assert "[전화번호]" in turns[1]["content"][0]["text"]
+    assert "010-1111-2222" not in turns[1]["content"][1]["content"]
+    assert turns[1]["content"][1]["tool_use_id"] == "t1"
+    assert turns[2]["content"] == 42

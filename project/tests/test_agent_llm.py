@@ -107,3 +107,64 @@ async def test_llm_failed_as_of_does_not_open_allowance(monkeypatch):
     assert r.verification["ok"]       # 수치 클레임 없는 안내 — 자명 통과
     # 에러 계약이 신뢰 소스로 승격됐다면 '2025' 같은 에코 값이 지원 근거가 됐을 것
     assert all(not c["supported"] for c in r.verification["checks"]) or not r.verification["checks"]
+    # 에러 계약 응답만 있는 턴 — 신뢰 소스가 비어 grounded=False (근거 보증 아님)
+    assert r.grounded is False
+
+
+@pytest.mark.asyncio
+async def test_llm_no_tool_answer_is_not_grounded(monkeypatch):
+    """모델이 도구를 한 번도 부르지 않고 답하면 grounded=False — 이전에는
+    dataclass 기본값 True 가 그대로 노출되어, 출처 0건 답변이 '근거로 뒷받침됨'
+    배지를 달고 나갔다(LLM 모드에는 문턱 기반 abstention 이 없으므로 grounded 는
+    '성공한 도구 출력이 신뢰 소스로 확보되었는가'의 신호여야 한다 — v7 발견)."""
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text="일반적으로 신속히 보고하는 것이 좋습니다."),
+        ]),
+    ])
+    r = await RaAgent().chat("이상사례는 어떻게 보고하나요?")
+    assert r.mode == "llm"
+    assert r.citations == [] and r.tool_calls == []
+    assert r.grounded is False
+
+
+@pytest.mark.asyncio
+async def test_llm_tool_grounded_answer_is_grounded(monkeypatch):
+    """성공한 도구 출력이 신뢰 소스로 확보된 답변은 grounded=True — 위 테스트의
+    반대 방향(도구 근거 답변까지 False 로 뒤집는 과보수 회귀 방지)."""
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="tool_use", content=[
+            _Block(type="tool_use", id="t1", name="search_regulations",
+                   input={"query": "중대한 이상사례 보고 기한"}),
+        ]),
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text="중대한 이상사례는 15일 이내에 보고합니다."),
+        ]),
+    ])
+    r = await RaAgent().chat("중대한 이상사례 보고 기한은?")
+    assert r.mode == "llm"
+    assert r.grounded is True and r.citations
+
+
+@pytest.mark.asyncio
+async def test_llm_api_failure_is_explicit_not_500(monkeypatch):
+    """LLM API 호출 실패(잘못된 키·네트워크·모델명)는 예외 전파(HTTP 500)가
+    아니라 명시적 안내 답변이 된다 — 가장 흔한 온보딩 실패 경로의 시끄럽고
+    '원인을 말해주는' 실패. 안내문에는 예외 타입만 싣고 예외 메시지는 싣지
+    않는다(외부 라이브러리 에러 문구의 요청 정보 에코 차단)."""
+    class _Boom:
+        async def create(self, **kwargs):
+            raise RuntimeError("secret-request-detail")
+
+    fake = types.ModuleType("anthropic")
+    fake.AsyncAnthropic = lambda api_key=None: types.SimpleNamespace(messages=_Boom())
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setattr(config, "LLM_AVAILABLE", True)
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "bad-key")
+
+    r = await RaAgent().chat("중대한 이상사례 보고 기한은?")
+    assert r.mode == "llm"
+    assert "LLM API 호출에 실패" in r.answer and "RuntimeError" in r.answer
+    assert "secret-request-detail" not in r.answer   # 예외 메시지 비에코
+    assert r.grounded is False
+    assert r.verification  # 실패 안내도 게이트를 지난다(모든 응답이 게이트 통과)
