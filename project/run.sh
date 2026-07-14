@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RA-Assistant 원커맨드 실행 스크립트
+# RAPV-Assistant 원커맨드 실행 스크립트
 set -e
 
 cd "$(dirname "$0")"
@@ -22,5 +22,5 @@ echo "▶ 배포 전 점검(preflight)..."
 .venv/bin/python -m src.preflight
 
 # 4) 서버 실행
-echo "▶ RA-Assistant 서버 시작 → http://127.0.0.1:8000"
+echo "▶ RAPV-Assistant 서버 시작 → http://127.0.0.1:8000"
 exec .venv/bin/python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000

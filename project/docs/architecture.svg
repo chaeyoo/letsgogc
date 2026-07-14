@@ -14,7 +14,7 @@
   <rect x="0" y="0" width="1060" height="1140" fill="#0f1720"/>
 
   <!-- Title -->
-  <text x="40" y="46" fill="#e6edf3" font-size="26" font-weight="700">🧬 RA-Assistant · 시스템 아키텍처</text>
+  <text x="40" y="46" fill="#e6edf3" font-size="26" font-weight="700">🧬 RAPV-Assistant · 시스템 아키텍처</text>
   <text x="42" y="72" fill="#8aa0b4" font-size="14">제약 규제업무(RA·PV)용 RAG + MCP Agentic 어시스턴트 — 모델과 도구를 MCP로 분리(= Hey.GC 2.0 구조)</text>
 
   <!-- Layer labels (left rail) -->
@@ -76,7 +76,7 @@
 
   <!-- 4) MCP server -->
   <rect x="330" y="472" width="400" height="64" rx="12" fill="#132029" stroke="#33c3a6" stroke-width="2"/>
-  <text x="530" y="500" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">🔌 FastMCP 서버 · "RA-Assistant"</text>
+  <text x="530" y="500" fill="#e6edf3" font-size="15" font-weight="700" text-anchor="middle">🔌 FastMCP 서버 · "RAPV-Assistant"</text>
   <text x="530" y="521" fill="#8aa0b4" font-size="11.5" text-anchor="middle">도구 인자 PII 마스킹 · 명시적 에러 계약(error+available)</text>
 
   <!-- external MCP client (stdio) -->

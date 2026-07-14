@@ -1,4 +1,4 @@
-# RA-Assistant 의존성 (Python 3.11+)
+# RAPV-Assistant 의존성 (Python 3.11+)
 # RAG 파이프라인은 외부 ML 라이브러리 없이 순수 파이썬으로 구현되어
 # numpy/torch/sentence-transformers 등 무거운 의존성이 없다.
 fastapi==0.139.0

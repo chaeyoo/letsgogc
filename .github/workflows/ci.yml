@@ -1,4 +1,4 @@
-name: RA-Assistant CI
+name: RAPV-Assistant CI
 
 # RAG/MCP/Agent 데모의 회귀 방지 — 테스트 + 검색품질/신뢰성 평가를 매 푸시마다 실행.
 on:

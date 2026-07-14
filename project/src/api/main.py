@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RA-Assistant", lifespan=lifespan)
+app = FastAPI(title="RAPV-Assistant", lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):

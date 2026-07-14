@@ -28,7 +28,7 @@ from fastmcp import FastMCP
 from .. import config
 from ..rag.pipeline import RagPipeline
 
-mcp = FastMCP("RA-Assistant")
+mcp = FastMCP("RAPV-Assistant")
 
 # 규제문서 RAG 인덱스는 서버 로드시 1회 구축 (무거운 초기화를 캐시)
 _pipeline: RagPipeline | None = None

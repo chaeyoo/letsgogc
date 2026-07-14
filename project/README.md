@@ -1,4 +1,4 @@
-# 🧬 RA-Assistant — 제약 규제업무(RA·PV)를 위한 RAG + MCP Agentic 어시스턴트
+# 🧬 RAPV-Assistant — 제약 규제업무(RA·PV)를 위한 RAG + MCP Agentic 어시스턴트
 
 > 제약회사 **RA(Regulatory Affairs·인허가/규제업무)·PV(Pharmacovigilance·약물감시)** 담당자가 실제로 쓸 법한
 > 사내 규제문서 검색·업무 자동화 AI 어시스턴트의 **작동하는 최소 데모(MVP)**.
@@ -42,7 +42,7 @@ RA·PV 담당자는 **규제문서의 바다**에서 일한다.
 계기판으로 집계**된다(6.6절).
 
 ### 데모 화면
-![RA-Assistant 데모](docs/demo.png)
+![RAPV-Assistant 데모](docs/demo.png)
 
 > 규제문서 검색(근거+출처 표시)과 마감일 조회를 각각 다른 MCP 도구가 처리한다. 하단에 "호출한 MCP 도구" 트레이스가 표시된다.
 
@@ -53,7 +53,7 @@ flowchart TB
     U["👤 RA·PV 담당자<br/>(웹 챗 UI)"] -->|질문| API["⚙️ FastAPI 백엔드<br/>/chat"]
     API --> AG["🤖 RA·PV 에이전트<br/>(Agentic Loop + Function Calling)"]
 
-    AG -->|"도구 선택·호출<br/>(MCP 프로토콜)"| MCP["🔌 FastMCP 서버<br/>RA-Assistant"]
+    AG -->|"도구 선택·호출<br/>(MCP 프로토콜)"| MCP["🔌 FastMCP 서버<br/>RAPV-Assistant"]
 
     subgraph MCP_TOOLS["MCP Tools / Resources / Prompts"]
         T1["search_regulations<br/>(규제문서 검색)"]

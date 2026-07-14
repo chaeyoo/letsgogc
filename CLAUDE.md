@@ -1,11 +1,11 @@
 # CLAUDE.md
 
 이 저장소는 GC녹십자 FDE(Forward Deployed Engineer) 지원 준비 자료다.
-`project/` 에는 포트폴리오 데모 **RA-Assistant**, 루트와 `직접작성/` 에는 지원 문서(자소서·경력기술서 등)가 있다.
+`project/` 에는 포트폴리오 데모 **RAPV-Assistant**, 루트와 `직접작성/` 에는 지원 문서(자소서·경력기술서 등)가 있다.
 
 ## RA·PV 표기 규칙 (필수)
 
-RA-Assistant 는 **RA(인허가/규제업무)와 PV(약물감시) 두 도메인을 함께 다루는 도구**다.
+RAPV-Assistant 는 **RA(인허가/규제업무)와 PV(약물감시) 두 도메인을 함께 다루는 도구**다.
 과거에 RA 전용 → PV 중심으로 프레이밍이 오락가락한 이력이 있어, 전 문서를 RA·PV 로 통일했다(PR #27~#30).
 **새 문서를 만들거나 기존 문서에 내용을 추가할 때도 이 통일을 유지해야 한다.**
 
@@ -24,7 +24,7 @@ PV 도메인(`src/pv/` 케이스 처리 워크플로)이 항상 나란히 등장
 
 ### RA 또는 PV 단독 표기가 맞는 곳 — 바꾸지 말 것
 
-- **제품명 "RA-Assistant"** — 고유명사이므로 그대로 둔다 (FastMCP 서버명, FastAPI title 포함)
+- **제품명 "RAPV-Assistant"** — 고유명사이므로 그대로 둔다 (FastMCP 서버명, FastAPI title 포함)
 - RA/PV **용어 자체의 정의·설명** (예: `description/dictionary.md` 의 RA·PV 항목)
 - **한쪽 도메인 내부를 설명하는 문맥** (예: "RA 도메인" 장 안에서 RA 업무를 설명, `src/pv/` PV 워크플로 설명)
 - `data/regulations/` **샘플 규제문서 코퍼스** (예: "RA 담당자 체크포인트" 섹션) — 검색 평가(Hit@1 등)의
