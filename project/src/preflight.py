@@ -96,6 +96,27 @@ _GATE_SELF_TESTS: tuple[dict, ...] = (
      "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "unsupported"},
     {"name": "부분 날짜 표기·정상", "answer": "보고 기한은 7월 25일입니다",
      "trusted": [_GATE_TOOL_LABELED], "expect_ok": True},
+    # v8 — 부분 날짜 표기의 방향·역할 축: 존재 축은 접미 대조로 살아 있는데
+    # 방향·역할 축이 ISO 만 수집하면, 그 표기로 오는 왜곡은 존재 축의 지지를
+    # 받은 채(supported) 통과한다 — 표기 변형 자가 테스트를 존재 축에만 두는
+    # 것은 이 파일 자신의 원칙(축 내부의 비대칭 금지) 위반이었다.
+    {"name": "부분 날짜 방향 한정어·심은 오류", "answer": "7월 25일 이후에 제출하면 됩니다",
+     "trusted": ["보완자료는 2026-07-25까지 제출한다"], "expect_ok": False, "axis": "direction_conflicts"},
+    {"name": "부분 날짜 역할 스왑·심은 오류", "answer": "보고 기한은 7월 10일입니다 (인지일 7월 25일)",
+     "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "role_conflicts"},
+    {"name": "부분 날짜 방향·역할 정상", "answer": "보고 기한은 7월 25일까지입니다 (인지일 7월 10일)",
+     "trusted": [_GATE_TOOL_LABELED + " 기한 2026-07-25까지"], "expect_ok": True},
+    # v8 — 하이픈 범위 표기: '-' 구분자를 뺀 대가로 상한·하한이 모두 미수집
+    # → 위조 하한 포함 표현 전체가 조용히 통과하던 사각지대.
+    {"name": "하이픈 범위·심은 오류", "answer": "처리기간은 10-15일입니다",
+     "trusted": ["처리기간은 15일이다"], "expect_ok": False, "axis": "unsupported"},
+    {"name": "하이픈 범위·정상", "answer": "처리기간은 10-15일입니다",
+     "trusted": ["처리기간은 10-15일이다"], "expect_ok": True},
+    # v8 — 방향 어휘 '이전'(상한)·'부터'(하한 기산점)
+    {"name": "방향 한정어(이전)·심은 오류", "answer": "15일 이전에 보고해야 합니다",
+     "trusted": ["인지일로부터 15일 이후 보고한다"], "expect_ok": False, "axis": "direction_conflicts"},
+    {"name": "날짜 방향 한정어(부터)·심은 오류", "answer": "2026-07-25부터 제출 가능합니다",
+     "trusted": ["제출 기한은 2026-07-25까지"], "expect_ok": False, "axis": "direction_conflicts"},
     {"name": "연도 표기·정상", "answer": "기한 산정은 2026년 도구 계산 기준입니다",
      "trusted": [_GATE_TOOL_LABELED], "expect_ok": True},
     {"name": "케이스 유래 지지·정상 라벨(2계층)",
@@ -177,34 +198,57 @@ def check_corpus(reg_dir: Path | None = None) -> list[str]:
                 problems.append(f"{d.source}: effective_date '{eff}' 가 YYYY-MM-DD 형식이 아님")
         if not d.text.strip():
             problems.append(f"{d.source}: 본문이 비어 있음")
-        # 폐지 체인: 폐지본은 후속 문서를 가리켜야 하고, 그 문서는 실존하는 현행이어야 한다.
-        # 단절된 체인은 '이력 조회'와 '현행 대체본 안내'를 조용히 망가뜨린다.
+        # 폐지 체인: 폐지본은 후속 문서를 가리켜야 하고, 체인을 따라가면
+        # 실존하는 현행(active) 종점에 도달해야 한다. 단절된 체인은 '이력
+        # 조회'와 '현행 대체본 안내'를 조용히 망가뜨린다.
+        #
+        # v8 — 체인은 '다단 순회'로 검사한다. superseded_by 규약은 최종
+        # 현행본이 아니라 **직전 후속본**이다: 리트리버의 as_of 구간 판정
+        # [시행일, 후속본 시행일) 이 이 규약을 전제한다(최종본 직결로 쓰면
+        # 중간 구간에서 두 버전이 동시에 '당시 현행'으로 반환된다). 그런데
+        # 종전 검사는 '후속본이 폐지본이면 결함'이라 정당한 2단 체인
+        # (구판→중간판(폐지)→현행)을 거부했다 — 리트리버와 preflight 가
+        # 서로 반대 규약을 요구해, 다단 이력을 넣는 순간 어느 쪽으로 써도
+        # 한쪽이 깨지는 잠복 상충. 각 링크의 시행일 단조성과 순환도 함께 본다.
         if status == "superseded":
-            succ = meta.get("superseded_by")
-            if not succ:
+            if not meta.get("superseded_by"):
                 problems.append(f"{d.source}: superseded 인데 superseded_by 가 없다")
-            elif succ not in all_ids:
-                problems.append(f"{d.source}: superseded_by '{succ}' 문서가 코퍼스에 없다")
             else:
-                succ_doc = next(x for x in docs if x.metadata.get("doc_id") == succ)
-                if str(succ_doc.metadata.get("status", "")) == "superseded":
-                    problems.append(f"{d.source}: superseded_by '{succ}' 도 폐지본 — 현행 종점이 없는 체인")
-                # 체인의 시간 단조성: 후속본 시행일이 구판 시행일보다 늦어야 한다.
-                # as_of 시점 조회는 [구판 시행일, 후속본 시행일) 구간으로 '당시
-                # 현행'을 판정하므로, 시행일이 역전된 체인은 빈 구간(어느 시점에도
-                # 유효하지 않은 버전)을 만들어 시점 조회를 조용히 망가뜨린다.
-                succ_eff, pred_eff = str(succ_doc.metadata.get("effective_date", "")), eff
-                try:
-                    if (
-                        succ_eff and pred_eff
-                        and _dt.date.fromisoformat(succ_eff) <= _dt.date.fromisoformat(pred_eff)
-                    ):
+                by_id = {str(x.metadata.get("doc_id")): x for x in docs}
+                visited = [str(meta.get("doc_id"))]
+                cur, cur_eff = d, eff
+                while True:
+                    nxt_id = str(cur.metadata.get("superseded_by") or "")
+                    if not nxt_id:
                         problems.append(
-                            f"{d.source}: 후속본 '{succ}' 시행일({succ_eff})이 구판 시행일({pred_eff})보다"
-                            " 늦지 않다 — 시점(as_of) 조회의 구간 판정이 깨진다"
+                            f"{d.source}: 체인의 '{visited[-1]}' 가 superseded 인데 superseded_by 가 없다"
                         )
-                except ValueError:
-                    pass  # 날짜 형식 오류는 위의 형식 검사가 별도로 보고한다
+                        break
+                    if nxt_id in visited:
+                        problems.append(
+                            f"{d.source}: 폐지 체인에 순환이 있다 ({' → '.join(visited)} → {nxt_id})"
+                        )
+                        break
+                    if nxt_id not in all_ids:
+                        problems.append(f"{d.source}: superseded_by '{nxt_id}' 문서가 코퍼스에 없다")
+                        break
+                    visited.append(nxt_id)
+                    nxt = by_id[nxt_id]
+                    nxt_eff = str(nxt.metadata.get("effective_date", ""))
+                    try:
+                        if (
+                            nxt_eff and cur_eff
+                            and _dt.date.fromisoformat(nxt_eff) <= _dt.date.fromisoformat(cur_eff)
+                        ):
+                            problems.append(
+                                f"{d.source}: 후속본 '{nxt_id}' 시행일({nxt_eff})이 구판 시행일({cur_eff})보다"
+                                " 늦지 않다 — 시점(as_of) 조회의 구간 판정이 깨진다"
+                            )
+                    except ValueError:
+                        pass  # 날짜 형식 오류는 위의 형식 검사가 별도로 보고한다
+                    if str(nxt.metadata.get("status", "")) != "superseded":
+                        break  # active 종점 도달 — 정상 체인
+                    cur, cur_eff = nxt, nxt_eff
     return problems
 
 
@@ -327,13 +371,19 @@ def smoke_checks() -> list[str]:
     #     않는다)의 수집이 죽으면 그 표기로 들어온 개인정보만 조용히 샌다.
     from .pv.redactor import redact
 
+    #     v8 추가: 호칭 뒤 '조사' 직결("박영희님이" — 괄호·공백 표기만 심으면
+    #     한국어에서 가장 흔한 조사 표기의 수집이 죽어도 못 잡는다),
+    #     외국인등록번호(성별코드 5~8), en-dash(–) 전화, 띄어 쓴 "환자 번호".
     probe = redact(
         "환자 김철수님(연락처 010-1234-5678, 주민번호 900101-1234567) 케이스. "
-        "보호자 전화는 010-9876-5432로, 주민번호는 850505-2345678입니다."
+        "보호자 전화는 010-9876-5432로, 주민번호는 850505-2345678입니다. "
+        "박영희님이 동행했고 외국인등록번호는 900101-5234567, "
+        "연락처 010–2222–3333, 환자 번호: A-1023."
     )
     for planted in (
         "김철수", "010-1234-5678", "900101-1234567",
         "010-9876-5432", "850505-2345678",  # 한글 직결 표기 변형
+        "박영희", "900101-5234567", "010–2222–3333", "A-1023",  # v8 표기 변형
     ):
         if planted in probe.text:
             problems.append(f"PII 마스킹 자가 테스트 실패: 심은 개인정보 '{planted}' 가 마스킹되지 않았다")

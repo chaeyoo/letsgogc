@@ -23,8 +23,50 @@ from src.pv.report import build_report
 # 인과성 평가 (WHO-UMC 제안)
 # ---------------------------------------------------------------------------
 def test_causality_certain_needs_all_signals():
-    c = assess_causality("복용 후 두드러기 발생, 중단 후 호전, 재투여 후 재발")
+    """Certain 은 대체 원인의 '명시 배제'까지 확인될 때만 제안된다. (v8 강화)
+
+    WHO-UMC Certain 은 "다른 약물·질환으로 설명되지 않음"의 확인을 요구한다 —
+    대체원인 '미언급'을 배제로 치면, 정보가 없는 요소가 등급을 올리는
+    docstring 원칙 위반이 대체원인 축에만 남는다."""
+    c = assess_causality("복용 후 두드러기 발생, 중단 후 호전, 재투여 후 재발. 병용약물은 없었음")
     assert c.suggested == CERTAIN
+
+
+def test_causality_certain_withheld_without_alternative_exclusion():
+    """대체 원인이 미언급이면 3신호가 다 있어도 Certain 을 보류하고 Probable. (v8)"""
+    c = assess_causality("복용 후 두드러기 발생, 중단 후 호전, 재투여 후 재발")
+    assert c.suggested == PROBABLE
+    assert any("대체 원인" in q for q in c.missing_info)  # 되물을 질문으로 안내
+
+
+def test_causality_negative_rechallenge_is_not_positive():
+    """재투여 후 '재발하지 않음'은 인과성의 반증이다 — 양성 오탐 금지. (v8)
+
+    이전에는 "다시 복용하니" 마커가 경과를 안 봐서, 미재발 케이스가
+    rechallenge 양성 → Certain 으로 제안되고 rationale 문장까지 사실과
+    어긋났다(오판 방향이 최고 등급 쪽인 가장 위험한 형태)."""
+    c = assess_causality("복용 후 두통, 중단 후 호전, 다시 복용하니 아무 증상이 없었다")
+    assert not c.signals["재투여 후 재발(rechallenge)"]
+    assert c.suggested == POSSIBLE
+    assert "재발하지 않아" in c.rationale
+
+
+def test_causality_negative_dechallenge_is_not_positive():
+    """'중단하니 오히려 악화'는 positive dechallenge 가 아니다. (v8)"""
+    c = assess_causality("복용 후 두통이 생겼고 중단하니 오히려 악화되었다")
+    assert not c.signals["중단 후 호전(dechallenge)"]
+    assert c.suggested == POSSIBLE
+
+
+def test_causality_negated_alternative_is_not_present():
+    """"병용약물은 없었다" 부정문이 대체원인 '있음'으로 오탐되지 않는다. (v8)
+
+    이전에는 '병용' 부분 매칭으로 대체원인 존재가 되어 등급이 아래로 밀리고
+    rationale("대체 원인 가능성이 있다")도 사실과 반대였다."""
+    c = assess_causality("투여 후 발진, 중단 후 호전. 병용약물은 없었다")
+    assert not c.signals["대체 원인 가능성(병용약·기저질환)"]
+    assert c.suggested == PROBABLE
+    assert not any("대체 원인" in q for q in c.missing_info)  # 정보가 있으므로 되묻지 않는다
 
 
 def test_causality_probable_without_rechallenge():
@@ -258,3 +300,50 @@ def test_tool_exposes_candidate_and_uncoded_layers():
     assert out["coded_terms"] == []
     assert [c["pt"] for c in out["candidate_terms"]] == ["저혈당"]
     assert all(c["needs_confirmation"] for c in out["candidate_terms"])
+
+
+# ---------------------------------------------------------------------------
+# v8 — 트리아지·보고요건·코딩의 오탐/오매핑 봉합
+# ---------------------------------------------------------------------------
+def test_triage_disorder_word_is_not_disability():
+    """"위장 장애"·"수면장애"의 '장애'(disorder)는 중대성 기준(disability)이 아니다. (v8)
+
+    단독 키워드 매칭은 한국어 의무기록에서 빈도 높은 동음이의를 전부
+    15일 신속보고로 밀어 올렸다 — disability 의미가 확정되는 결합형만 잡는다."""
+    from src.pv.triage import assess_case
+    assert not assess_case("복용 후 경미한 위장 장애가 있었다").is_serious
+    assert not assess_case("복용 후 수면장애를 호소했다").is_serious
+
+
+def test_triage_real_disability_still_detected():
+    """진짜 disability 서술(영구 장애·장애 판정·청력 상실)은 여전히 중대다. (v8)"""
+    from src.pv.triage import assess_case
+    assert assess_case("복용 후 청력 상실이 발생해 영구 장애 판정을 받았다").is_serious
+    assert assess_case("투여 후 실명하였다").is_serious
+
+
+def test_report_hospital_treatment_is_not_reporter():
+    """"병원에서 치료받았다"는 보고자 정보가 아니다 — 조용한 통과 금지. (v8)
+
+    보고자 없는 케이스가 reportable=True 로 통과하는 것은 이 모듈에서
+    유일하게 실패 방향이 '조용한 쪽'인 결함이었다."""
+    r = build_report("45세 여성이 진통제E정을 복용 후 두통으로 병원에서 치료받았다")
+    assert not r.reportable
+    assert any("보고자" in m for m in r.missing)
+
+
+def test_report_hospital_reporting_still_counts():
+    """보고 행위가 결합된 "병원에서 보고"는 여전히 보고자로 인정된다. (v8)"""
+    r = build_report("45세 남성 환자가 항생제A정을 복용 후 두드러기 발생. 병원에서 보고된 케이스")
+    assert not any("보고자" in m for m in r.missing)
+
+
+def test_coding_jaundice_is_independent_pt():
+    """황달은 간손상이 아니라 독립 PT(Jaundice)로 코딩된다. (v8)
+
+    MedDRA 에서 황달(Jaundice)은 간담도 장애의 독립 PT — 용혈성·폐쇄성 황달은
+    간손상이 아니므로, '검수 사전=자동 확정' 1계층의 오매핑은 집계를 오염시킨다."""
+    coded = code_terms("복용 후 황달이 나타났다")
+    assert [(t.pt, t.pt_en) for t in coded] == [("황달", "Jaundice")]
+    coded2 = code_terms("복용 후 간독성 소견")
+    assert [(t.pt, t.pt_en) for t in coded2] == [("간손상", "Liver injury")]

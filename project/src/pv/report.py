@@ -34,7 +34,11 @@ from .triage import TriageResult, assess_case
 # 최소보고요건 감지 신호 (마스킹된 텍스트에서도 남는 '존재 신호' 위주)
 _PATIENT_MARKERS = ["환자", "[이름]", "환아", "수진자"]
 _PATIENT_RE = re.compile(r"\d{1,3}\s*세|[남여]성|남아|여아")
-_REPORTER_MARKERS = ["보고자", "의사", "약사", "간호사", "보호자", "본인이 직접", "의료진", "병원에서"]
+# "병원에서" 단독 마커는 치료 문맥("병원에서 치료받았다")을 보고자로 오탐해
+# 보고자 정보가 없는 케이스를 reportable=True 로 '조용히 통과'시켰다(v8) —
+# 이 모듈의 실패 방향은 '시끄러운 보완 요청'이어야 하므로, 병원 언급은
+# 보고 행위가 결합된 형태만 인정한다.
+_REPORTER_MARKERS = ["보고자", "의사", "약사", "간호사", "보호자", "본인이 직접", "의료진", "병원에서 보고", "병원이 보고"]
 # 의심약 감지: "OO정/캡슐/주사 + 복용/투여" 처럼 노출(exposure) 맥락이 따라올 때만
 # 매칭한다 — '규정·판정·일정' 같은 '-정'으로 끝나는 일반 명사의 오탐을 막기 위해.
 _DRUG_RE = re.compile(
@@ -142,7 +146,7 @@ def _render_markdown(
         lines.append("- 중대성: 비중대 (중대성 기준 미감지)")
     lines.append(f"- 보고 경로: {triage.route}")
     if triage.deadline_date:
-        lines.append(f"- 보고 기한: **{triage.deadline_date}** (인지일 {triage.awareness_date} 기준)")
+        lines.append(f"- 보고 기한: **{triage.deadline_date}** (인지일 {triage.awareness_date} 기준, 역일(calendar day) 계산)")
     lines.append("")
 
     lines.append("## 4. 인과성 평가 (WHO-UMC · 제안)")

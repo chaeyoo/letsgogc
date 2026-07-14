@@ -61,7 +61,7 @@
   },
   {
    "id": "PV-005",
-   "case": "환자가 진통제E정을 복용 후 발진이 나타났고 중단하니 사라졌으며, 다시 복용하니 재발했습니다. 의사가 보고했습니다.",
+   "case": "환자가 진통제E정을 복용 후 발진이 나타났고 중단하니 사라졌으며, 다시 복용하니 재발했습니다. 병용약물이나 기저질환은 없었습니다. 의사가 보고했습니다.",
    "expect": {
     "serious": false,
     "deadline_days": null,
@@ -71,7 +71,7 @@
     ],
     "reportable": true
    },
-   "note": "rechallenge 양성까지 확인된 교과서적 Certain 케이스."
+   "note": "rechallenge 양성에 대체 원인 '명시 배제'까지 확인된 교과서적 Certain 케이스 — WHO-UMC Certain 은 대체 원인 배제가 '확인'될 때만이며, 미언급 케이스는 Probable 상한(v8 규칙 강화 반영)."
   },
   {
    "id": "PV-006",

@@ -163,6 +163,7 @@ def evaluate() -> dict:
     dir_n = dir_detected = 0
     nat_n = nat_detected = 0
     para_n = para_pass = 0
+    range_n = range_detected = 0
     no_claim_items = 0
 
     for item in qa:
@@ -200,6 +201,21 @@ def evaluate() -> dict:
                     off_n += 1
                     if not verify_answer(corrupted, trusted).ok:
                         off_detected += 1
+            # 하이픈 범위 하한 위조(v8): "15일" → "8-15일" — '-' 구분자 범위는
+            # 상한·하한이 모두 미수집이라 위조 하한을 포함한 표현 전체가
+            # 조용히 통과하던 사각지대였다. 위조 하한은 근거에 없는 값으로 고른다.
+            if unit == "일" and "." not in num:
+                fake_lo = next(
+                    (str(v) for v in (8, 9, 11, 13, 4)
+                     if (str(v), "일") not in trusted_nums and str(v) != num and v < int(num)),
+                    None,
+                )
+                if fake_lo is not None:
+                    corrupted = _replace_claim(answer, num, unit, f"{fake_lo}-{num}일")
+                    if corrupted != answer:
+                        range_n += 1
+                        if not verify_answer(corrupted, trusted).ok:
+                            range_detected += 1
             # 고유어 치환: 값이 '다른' 고유어로 — v1의 조용한 사각지대였던 형태
             if unit == "일":
                 wrong = next(
@@ -263,6 +279,7 @@ def evaluate() -> dict:
     # (종전에는 부분 날짜 클레임이 아예 추출되지 않아 측정 자체가 없던 축).
     date_n = date_detected = date_clean = 0
     role_n = role_detected = 0
+    prole_n = prole_detected = 0
     partial_n = partial_detected = partial_clean = 0
     for case in _load_items("pv_dataset.json"):
         tool_out = assess_adverse_event(case["case"], awareness_date=_AWARENESS_DATE)
@@ -285,6 +302,15 @@ def evaluate() -> dict:
             role_n += 1
             if not verify_answer(swapped, trusted, user_fact_texts=facts).ok:
                 role_detected += 1
+            # 부분 날짜 표기의 역할 스왑(v8) — 두 날짜 모두 접미 대조로 존재
+            # 축을 통과하면서 역할 축(ISO 전용)을 우회하던 사각지대의 측정.
+            swapped_partial = (
+                f"이 케이스의 보고 기한은 {int(_AWARENESS_DATE[5:7])}월 {int(_AWARENESS_DATE[8:10])}일"
+                f" 입니다 (인지일 {int(deadline[5:7])}월 {int(deadline[8:10])}일 기준)."
+            )
+            prole_n += 1
+            if not verify_answer(swapped_partial, trusted, user_fact_texts=facts).ok:
+                prole_detected += 1
         # 부분 날짜 축: 같은 마감일의 "M월 D일" 재서술(clean) vs 시프트(corrupt)
         good_partial = f"이 케이스의 보고 기한은 {int(deadline[5:7])}월 {int(deadline[8:10])}일 입니다."
         bad_partial = f"이 케이스의 보고 기한은 {int(shifted[5:7])}월 {int(shifted[8:10])}일 입니다."
@@ -303,6 +329,8 @@ def evaluate() -> dict:
         "n_paraphrase": para_n, "para_pass": para_pass,
         "n_date": date_n, "date_detected": date_detected, "date_clean": date_clean,
         "n_role": role_n, "role_detected": role_detected,
+        "n_partial_role": prole_n, "partial_role_detected": prole_detected,
+        "n_range": range_n, "range_detected": range_detected,
         "n_partial": partial_n, "partial_detected": partial_detected, "partial_clean": partial_clean,
         "SupersededFlagged": superseded_flagged,
         "HistoryModeAllowed": history_allowed,
@@ -356,6 +384,8 @@ def main() -> None:
     print(row("NativeSwapDetection (고유어 치환 15일→열흘)       ", res["nat_detected"], res["n_native"]))
     print(row("DateShiftDetection  (마감일 시프트 +3일)          ", res["date_detected"], res["n_date"]))
     print(row("DateRoleSwapDetection(인지일↔마감일 역할 스왑)     ", res["role_detected"], res["n_role"]))
+    print(row("PartialRoleSwapDet. (부분 날짜 표기 역할 스왑)     ", res["partial_role_detected"], res["n_partial_role"]))
+    print(row("HyphenRangeDetection(하이픈 범위 하한 위조 8-15일) ", res["range_detected"], res["n_range"]))
     print(row("PartialDateDetection(연도 없는 부분 날짜 시프트)   ", res["partial_detected"], res["n_partial"]))
     print(f"폐지본 인용 감지: {'✓' if res['SupersededFlagged'] else '✗ 실패'}"
           f" · 이력 조회 모드 허용: {'✓' if res['HistoryModeAllowed'] else '✗ 실패'}")
@@ -364,7 +394,7 @@ def main() -> None:
     for f in e2e["failures"]:
         print(f"  - E2E 실패: {f}")
     print("-" * 70)
-    print("해석: 탐지율 7축은 '근거에 없는 값·방향·역할'로 합성한 변조라 1.0이 정상이며,")
+    print("해석: 탐지율 9축은 '근거에 없는 값·방향·역할'로 합성한 변조라 1.0이 정상이며,")
     print("      깨지는 순간이 곧 검증기(클레임 추출·대조) 회귀다 — 회귀 고정 핀.")
     print("      CleanPassRate 도 절반은 구성적이다(발췌⊆신뢰 소스): 잡는 것은 답변/근거")
     print("      추출의 비대칭 회귀다. 구성이 개입하지 않는 실측은 E2EPassRate —")

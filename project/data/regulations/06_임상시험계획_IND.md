@@ -6,6 +6,7 @@ authority: 식품의약품안전처
 effective_date: 2025-02-20
 version: "1.1"
 tags: [IND, 임상시험, IRB, GCP, 임상변경]
+disclaimer: 데모용 가상 문서 — 실제 규정·고시가 아니며 수치·조항은 실제와 다를 수 있음
 ---
 
 # 임상시험계획 승인(IND) 및 관리 기준

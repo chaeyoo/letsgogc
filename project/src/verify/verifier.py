@@ -116,6 +116,15 @@ _PARTIAL_DATE_RE = re.compile(r"--(\d{2}-\d{2})(?![\d-])")
 # 범위 표기("15~30일")의 하한 — 주 정규식은 상한(30일)만 잡아 하한이 검증을
 # 벗어난다. 구분자에 '-'를 넣지 않는 이유: 날짜(2026-07-25)와 충돌한다.
 _RANGE_RE = re.compile(rf"(?<![\d.\-])(\d+(?:\.\d+)?)\s*[~∼〜–—]\s*\d+(?:\.\d+)?\s*({_UNIT_ALT})")
+# 하이픈 범위("10-15일")는 상한·하한이 **모두** 미수집이었다(v8) — '-' 를
+# 구분자에서 뺀 대가로 하한은 안 잡히고, 상한("15일")마저 앞이 '-' 라
+# _NUM_UNIT_RE 의 룩비하인드에 걸려 표현 전체가 사각지대가 됐다(위조된
+# 하한을 포함해 전부 조용한 통과). 날짜(4-2-2 자릿수)와는 '각 변이 1~3자리
+# + 앞에 숫자·하이픈 금지'로 구분한다: "2026-07-25일"의 "07-25일"은 앞이
+# '-' 라 배제되고, "10-15일"은 앞이 공백이라 잡힌다. 두 변을 모두 수집한다.
+_HYPHEN_RANGE_RE = re.compile(
+    rf"(?<![\d.\-])(\d{{1,3}}(?:\.\d+)?)-(\d{{1,3}}(?:\.\d+)?)\s*({_UNIT_ALT})"
+)
 
 # 고유어 수량 표현 → 허용 canonical (값, 단위) 형태들.
 # '환산'이 아니라 값이 정확히 같은 '표기 변형'만 담는다(보름=15일).
@@ -142,8 +151,11 @@ _NATIVE_RE = re.compile("|".join(sorted((re.escape(w) for w in _NATIVE_NUMERALS)
 
 # 방향 한정어 — 닫힌 어휘 집합이라 결정론적 대조가 가능하다.
 # 수치+단위 바로 뒤(마크다운 강조 등 브리지 문자 허용)에 붙은 경우만 본다.
-_UPPER_WORDS = ("이내", "안에", "이하", "미만", "까지")
-_LOWER_WORDS = ("이상", "이후", "초과", "경과")
+# '이전'·'부터'(v8): '이전'은 '이내/까지'와 같은 급의 고빈도 상한 어휘인데
+# 빠져 있어 "15일 이전"↔"15일 이후" 뒤집기가 어휘 하나 차이로 통과했다.
+# '부터'는 기산점(하한) — "2026-07-25까지"를 "…부터"로 뒤집는 왜곡을 잡는다.
+_UPPER_WORDS = ("이내", "안에", "이하", "미만", "까지", "이전")
+_LOWER_WORDS = ("이상", "이후", "초과", "경과", "부터")
 _QUAL_RE = re.compile(
     rf"(?<![\d.\-])(\d+(?:\.\d+)?)\s*({_UNIT_ALT})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
 )
@@ -164,6 +176,15 @@ _NATIVE_QUAL_RE = re.compile(
 _DATE_QUAL_RE = re.compile(
     rf"(?<![\d-])(\d{{4}}-\d{{2}}-\d{{2}})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
 )
+# 부분 날짜(--MM-DD 정규화 표기)에 붙는 방향 한정어(v8) — 존재 축은 접미
+# 대조로 부분 표기를 지지해 주면서 방향 축은 완전한 ISO 만 수집하면,
+# "7월 25일 이후"라는 뒤집기가 존재 축(월-일 성분 일치)의 지지를 받은 채
+# 방향 축을 통째로 우회한다 — '지지된 왜곡'은 미수집보다 나쁘다. 이 파일이
+# 스스로 제거했다고 선언한 "같은 왜곡이 표기에 따라 한쪽만 잡히는 축 간
+# 비대칭"이 부분 날짜 표기에 남아 있던 형태.
+_PARTIAL_DATE_QUAL_RE = re.compile(
+    rf"--(\d{{2}}-\d{{2}})[\s*_)\]】'\"”]*({'|'.join(_UPPER_WORDS + _LOWER_WORDS)})"
+)
 _OPPOSITE = {"상한": "하한", "하한": "상한"}
 
 # 날짜 역할 대조 — 결정론적 도구의 역할 라벨(직렬화된 JSON 키) ↔ 답변의 역할 키워드.
@@ -180,6 +201,13 @@ _ROLE_LABEL_RE: dict[str, re.Pattern[str]] = {
 _ROLE_ANSWER_RE: dict[str, re.Pattern[str]] = {
     "기한": re.compile(rf"(?:기한|마감)일?{_ROLE_BRIDGE}(\d{{4}}-\d{{2}}-\d{{2}})"),
     "인지일": re.compile(rf"인지일{_ROLE_BRIDGE}(\d{{4}}-\d{{2}}-\d{{2}})"),
+}
+# 역할 대조의 부분 날짜 표기(v8) — "보고 기한은 7월 10일입니다 (인지일 7월
+# 25일)"처럼 연도 없는 표기로 역할을 뒤바꾸면, 두 날짜 모두 접미 대조로
+# 존재 축을 통과하면서 역할 축(완전한 ISO 만 매칭)은 아예 발화하지 않았다.
+_ROLE_ANSWER_PARTIAL_RE: dict[str, re.Pattern[str]] = {
+    "기한": re.compile(rf"(?:기한|마감)일?{_ROLE_BRIDGE}--(\d{{2}}-\d{{2}})"),
+    "인지일": re.compile(rf"인지일{_ROLE_BRIDGE}--(\d{{2}}-\d{{2}})"),
 }
 
 
@@ -322,6 +350,10 @@ def _numeric_forms(text: str) -> set[tuple[str, str]]:
     for m in _RANGE_RE.finditer(text):  # 범위 하한
         unit = "주" if m.group(2) == "주일" else m.group(2)
         forms.add((m.group(1).lstrip("0") or "0", unit))
+    for m in _HYPHEN_RANGE_RE.finditer(text):  # 하이픈 범위 — 두 변 모두(v8)
+        unit = "주" if m.group(3) == "주일" else m.group(3)
+        forms.add((m.group(1).lstrip("0") or "0", unit))
+        forms.add((m.group(2).lstrip("0") or "0", unit))
     for m in _NATIVE_RE.finditer(text):
         forms |= set(_NATIVE_NUMERALS[m.group(0)])
     return forms
@@ -360,6 +392,23 @@ def _date_qualifier_map(text: str) -> dict[str, set[str]]:
     return out
 
 
+def _partial_date_qualifier_map(text: str) -> dict[str, set[str]]:
+    """월-일 접미("MM-DD") → 방향 한정어 클래스 집합 (v8).
+
+    완전한 날짜의 한정어("2026-07-25까지")를 접미(07-25)로도 투영한다 —
+    존재 축이 부분 표기를 완전한 날짜의 월-일 성분으로 지지하는 것과 같은
+    대칭: 답변이 "7월 25일 이후"라 쓰고 근거가 "2026-07-25까지"라 써도,
+    그 반대여도 방향 대조가 성립해야 한다.
+    """
+    text = _normalize(text)
+    out: dict[str, set[str]] = {}
+    for m in _DATE_QUAL_RE.finditer(text):
+        out.setdefault(m.group(1)[5:], set()).add(_qual_class(m.group(2)))
+    for m in _PARTIAL_DATE_QUAL_RE.finditer(text):
+        out.setdefault(m.group(1), set()).add(_qual_class(m.group(2)))
+    return out
+
+
 def extract_claims(text: str) -> tuple[set[tuple[str, str]], set[str]]:
     """텍스트에서 (수치, 단위) 클레임 집합과 날짜 집합을 추출한다."""
     return _numeric_forms(text), set(_DATE_RE.findall(_normalize(text)))
@@ -389,6 +438,11 @@ def _occurrences(answer: str) -> list[_Occurrence]:
         num = m.group(1).lstrip("0") or "0"
         unit = "주" if m.group(2) == "주일" else m.group(2)
         _add(f"{num}{unit}", ((num, unit),), "numeric")
+    for m in _HYPHEN_RANGE_RE.finditer(answer):  # 하이픈 범위 — 두 변을 별개 클레임으로(v8)
+        unit = "주" if m.group(3) == "주일" else m.group(3)
+        for g in (m.group(1), m.group(2)):
+            num = g.lstrip("0") or "0"
+            _add(f"{num}{unit}", ((num, unit),), "numeric")
     for m in _NATIVE_RE.finditer(answer):
         _add(m.group(0), _NATIVE_NUMERALS[m.group(0)], "numeric")
     for d in _DATE_RE.findall(answer):
@@ -585,6 +639,29 @@ def verify_answer(
                            from_case=cls in facts_date_quals.get(d, set()))
             )
 
+    # 부분 날짜(연도 없는 표기)의 방향 대조(v8) — 존재 축이 접미로 지지하는
+    # 표기는 방향 축도 접미로 대조한다. 규칙은 완전한 날짜와 동일: strict 에
+    # 그 접미의 한정어가 '반대 방향만' 있을 때 플래그, 케이스 방향은 라벨.
+    src_partial_quals = _partial_date_qualifier_map(strict)
+    facts_partial_quals = _partial_date_qualifier_map(facts) if facts else {}
+    for m in _PARTIAL_DATE_QUAL_RE.finditer(norm_answer):
+        suffix = m.group(1)
+        if suffix not in src_partials:
+            continue  # 존재 축(부분 날짜 접미 대조)이 이미 잡았다
+        cls = _qual_class(m.group(2))
+        trusted_cls = src_partial_quals.get(suffix, set())
+        if cls not in trusted_cls and _OPPOSITE[cls] in trusted_cls:
+            mm, dd = suffix.split("-")
+            display = f"{int(mm)}월 {int(dd)}일 {m.group(2)}"
+            if display in seen_dir:
+                continue
+            seen_dir.add(display)
+            result.checks.append(
+                ClaimCheck(display, "direction", False,
+                           evidence=_snippet(trusted, (suffix, ""), "partial_date"),
+                           from_case=cls in facts_partial_quals.get(suffix, set()))
+            )
+
     # 날짜 역할 대조 — 존재 대조를 통과한 날짜에 한해, 답변이 그 날짜에 부여한
     # 역할(기한/인지일)이 결정론적 도구의 역할 라벨과 일치하는지 본다.
     # 신뢰 소스에 해당 역할 라벨이 없으면(검색 근거만 있는 경우 등) 판단
@@ -602,6 +679,22 @@ def verify_answer(
             if d in labels or d not in src_dates:
                 continue  # 역할 일치, 또는 미확인 날짜(존재 대조 축이 이미 잡았다)
             display = f"{role} {d}"
+            if display in seen_role:
+                continue
+            seen_role.add(display)
+            result.checks.append(
+                ClaimCheck(display, "role", False, evidence=", ".join(sorted(labels)))
+            )
+        # 부분 날짜 표기의 역할 대조(v8) — 라벨(완전한 ISO)을 월-일 접미로
+        # 투영해 비교한다. 존재 축을 접미로 통과한 표기가 역할 축(ISO 전용
+        # 매칭)을 우회하던 사각지대의 봉합. 보수성 규칙은 동일하다.
+        label_suffixes = {l[5:] for l in labels}
+        for m in _ROLE_ANSWER_PARTIAL_RE[role].finditer(norm_answer):
+            suffix = m.group(1)
+            if suffix in label_suffixes or suffix not in src_partials:
+                continue
+            mm, dd = suffix.split("-")
+            display = f"{role} {int(mm)}월 {int(dd)}일"
             if display in seen_role:
                 continue
             seen_role.add(display)

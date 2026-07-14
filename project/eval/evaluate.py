@@ -19,8 +19,8 @@ from src import config
 from src.rag.pipeline import RagPipeline
 
 
-def _load_qa() -> list[dict]:
-    path = config.BASE_DIR / "eval" / "qa_dataset.json"
+def _load_qa(dataset: str = "qa_dataset.json") -> list[dict]:
+    path = config.BASE_DIR / "eval" / dataset
     return [x for x in json.loads(path.read_text(encoding="utf-8"))["items"]]
 
 
@@ -59,9 +59,12 @@ def _retrieve(pipe: RagPipeline, mode: str, question: str, top_k: int, rerank_n:
     return pipe.retriever.retrieve(question, top_k=top_k, rerank_n=rerank_n, expand=True)
 
 
-def evaluate(mode: str, top_k: int, rerank_n: int, pipe: RagPipeline | None = None) -> dict:
+def evaluate(
+    mode: str, top_k: int, rerank_n: int, pipe: RagPipeline | None = None,
+    dataset: str = "qa_dataset.json",
+) -> dict:
     pipe = pipe or RagPipeline().build()
-    qa = _load_qa()
+    qa = _load_qa(dataset)
     hits1 = hits3 = 0
     hn_hits1 = hn_total = 0          # hard-negative 부분집합 Hit@1
     mrr_sum = 0.0
@@ -151,6 +154,19 @@ def main() -> None:
     print(f" - HardNegHit@1 : {fmt_ci(c['hn_hits1'], c['hn_total'])}  (n={c['hn_total']})")
     print("   → 1.000은 '완벽'이 아니라 '이 표본에서 실패 관측 0'이라는 뜻이다.")
     print("     구간 하한이 진짜 성능의 보수적 추정 — 개선 주장은 구간이 갈릴 때만 한다.")
+
+    # --- 홀드아웃 평가(v8): 개발셋 수치와 일반화 성능의 구분 ---
+    # 위 32문항은 실패 분석→신호 추가→재측정 루프에 쓰인 '개발셋'이라, 그 위의
+    # 1.000은 일반화 성능이 아니다. 홀드아웃 문항은 튜닝에 일절 쓰지 않는다
+    # (규율은 eval/holdout_dataset.json 의 _comment 참고) — 수치가 1.0 미만이어도
+    # 그대로 싣는다: 이 갭이 개발셋 수치와 일반화의 차이를 정직하게 보여준다.
+    hold = evaluate("expand", top_k, rerank_n, pipe=pipe, dataset="holdout_dataset.json")
+    hc, hn = hold["counts"], hold["n"]
+    print()
+    print("홀드아웃 (튜닝 미사용 문항 — 개발셋 32문항과 분리, 운영 기본 ④):")
+    print(f" - Hit@1        : {hold['Hit@1']}  {fmt_ci(hc['hits1'], hn)}  (n={hn})")
+    print(f" - ContextRecall: {hold['ContextRecall']}")
+    print("   → 개발셋 1.000과 이 수치의 차이가 '튜닝된 수치'와 '일반화'의 갭이다.")
 
     # --- 임베딩 provider 비교(pluggable 실증) ---
     print()

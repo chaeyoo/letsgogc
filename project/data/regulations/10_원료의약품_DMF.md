@@ -6,6 +6,7 @@ authority: 식품의약품안전처
 effective_date: 2025-02-01
 version: "1.3"
 tags: [DMF, 원료의약품, 등록, CMC, 마스터파일]
+disclaimer: 데모용 가상 문서 — 실제 규정·고시가 아니며 수치·조항은 실제와 다를 수 있음
 ---
 
 # 원료의약품 등록(DMF) 및 관리 기준

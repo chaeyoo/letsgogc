@@ -36,9 +36,16 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
 def _split_by_heading(text: str) -> list[tuple[str, str]]:
-    """(섹션제목, 섹션본문) 리스트로 분할. 헤딩 기준 구조 청킹."""
+    """(섹션제목, 섹션본문) 리스트로 분할. 헤딩 기준 구조 청킹.
+
+    첫 헤딩 이전(또는 헤딩 없는 문서)의 기본 섹션명은 "(본문)" — "개요"로
+    두면 리트리버의 서두 섹션 감쇠(_PREAMBLE_SECTION_RE: 목적|개요|총칙)에
+    걸려, 헤딩 없는 문서의 **모든** 청크가 정의형 질의가 아닌 한 일괄
+    감점되는 계통 편향이 생긴다(현 코퍼스는 전 문서에 헤딩이 있어 잠복
+    상태였지만, 실무 문서 투입 시 바로 드러난다 — v8).
+    """
     sections: list[tuple[str, str]] = []
-    cur_title = "개요"
+    cur_title = "(본문)"
     cur_lines: list[str] = []
     for line in text.splitlines():
         m = _HEADING_RE.match(line)

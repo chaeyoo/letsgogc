@@ -6,15 +6,23 @@ TF-IDF/BM25 같은 어휘 기반 검색은 이 간극을 스스로 못 메우므
 제약 규제 도메인 용어 사전으로 질의를 확장해 회수(recall)를 보강한다.
 
 설계 원칙:
-  - 확장은 1단계 하이브리드 검색(넓게 회수)에만 적용한다.
-    2단계 리랭킹은 '원 질의'로 정밀 재점수한다 — 확장어가 정밀도 신호를
-    희석하지 않게 회수/정밀 단계의 역할을 분리한 것.
+  - 확장은 1단계 하이브리드 검색(넓게 회수)에 전가중으로 적용하고,
+    2단계 리랭킹에서는 '원 질의' 토큰이 주 신호, 확장 토큰은 절반 가중의
+    보조(aux) 신호다(retriever 참고) — 확장어가 정밀도 신호를 희석하지
+    않도록 회수/정밀 단계에서 가중을 차등한 것.
   - 사전은 '사용자 구어 → 문서 정식 용어' 방향으로만 확장한다(단방향).
     양방향/연쇄 확장은 노이즈(주제 표류)를 만들기 쉽다.
+  - 표제어 매칭의 경계(v8): 한글 표제어는 부분 문자열("심각하게"←"심각")이
+    의도된 동작이지만, 영문 표제어까지 부분 문자열로 보면 무관 단어 안에서
+    발화한다 — "audit finding"의 'ind', "PVC 포장재"의 'pv'가 각각 임상시험·
+    약물감시 확장을 일으켜 주제 표류로 이어졌다. 영문/숫자 표제어는 단어
+    경계(비영숫자 양측)에서만 매칭한다.
   - LLM 질의 재작성 대비: 결정론적(감사 가능)·저지연·무비용. 실무에선
     이 사전을 현업 용어집(신입 교육자료·SOP 용어 정의)에서 추출해 관리한다.
 """
 from __future__ import annotations
+
+import re
 
 # 사용자 구어/약어 → 규제문서 정식 용어 (단방향)
 SYNONYMS: dict[str, list[str]] = {
@@ -47,6 +55,18 @@ SYNONYMS: dict[str, list[str]] = {
 }
 
 
+def _term_in(term: str, low: str) -> bool:
+    """표제어 매칭 — 영문/숫자 표제어는 단어 경계, 한글은 부분 문자열.
+
+    한글은 조사·활용이 직결되므로("심각하게") 부분 매칭이 맞고, 영문은
+    합성어 내부 매칭("finding"⊃"ind", "pvc"⊃"pv")이 오탐이라 경계가 맞다 —
+    같은 규칙을 양쪽에 쓰면 어느 한쪽이 반드시 깨지는 비대칭 지점(v8).
+    """
+    if re.fullmatch(r"[a-z0-9 ]+", term):
+        return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", low) is not None
+    return term in low
+
+
 def expand_query(query: str) -> str:
     """질의에 도메인 동의어를 덧붙여 반환한다(원 질의는 항상 보존).
 
@@ -57,7 +77,7 @@ def expand_query(query: str) -> str:
     low = query.lower()
     extra: list[str] = []
     for term, expansions in SYNONYMS.items():
-        if term in low:
+        if _term_in(term, low):
             for e in expansions:
                 if e.lower() not in low and e not in extra:
                     extra.append(e)

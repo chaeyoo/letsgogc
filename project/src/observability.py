@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("ra_assistant")
+logger = logging.getLogger("rapv_assistant")
 if not logger.handlers:
     _h = logging.StreamHandler()
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))

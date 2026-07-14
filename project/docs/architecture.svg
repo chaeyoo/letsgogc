@@ -15,7 +15,7 @@
 
   <!-- Title -->
   <text x="40" y="46" fill="#e6edf3" font-size="26" font-weight="700">🧬 RAPV-Assistant · 시스템 아키텍처</text>
-  <text x="42" y="72" fill="#8aa0b4" font-size="14">제약 규제업무(RA·PV)용 RAG + MCP Agentic 어시스턴트 — 모델과 도구를 MCP로 분리(= Hey.GC 2.0 구조)</text>
+  <text x="42" y="72" fill="#8aa0b4" font-size="14">제약 규제업무(RA·PV)용 RAG + MCP Agentic 어시스턴트 — 모델과 도구를 MCP로 분리(Hey.GC 2.0과 같은 구조 원리)</text>
 
   <!-- Layer labels (left rail) -->
   <text x="20" y="150" fill="#4f9dff" font-size="12" font-weight="700" transform="rotate(-90 20 150)">사용자·서빙</text>
