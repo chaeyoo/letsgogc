@@ -118,9 +118,10 @@ function addMsg(role, text) {
 
 function renderBot(bubble, data) {
   let html = esc(data.answer);
-  // 근거 상태 배지: 근거 기반 답변 vs 근거 없음(abstention)
+  // 근거 상태 배지: 도구 근거 확보 여부 — 오프라인 모드에서 False 는 회피(abstention),
+  // LLM 모드에서 False 는 모델이 도구 근거 없이 답했다는 뜻(둘 다 실무 참고 금지 신호)
   const gb = data.grounded === false
-    ? `<span class="pill warn">⚠ 근거 없음(추측 안 함)</span>`
+    ? `<span class="pill warn">⚠ 도구 근거 없음 — 실무 참고 금지</span>`
     : `<span class="pill ok">✓ 근거 기반</span>`;
   const lat = (typeof data.latency_ms === 'number')
     ? `<span class="pill">⚡ ${data.latency_ms} ms</span>` : '';

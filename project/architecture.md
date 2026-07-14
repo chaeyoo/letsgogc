@@ -8,7 +8,7 @@
 
 ## 0. 한 문장 요약
 
-**"규제문서를 근거·출처와 함께 검색하는 RAG"와 "업무 도구(마감·트리아지·보고서 초안)를 자율 호출하는 에이전트"를 MCP 규격으로 연결한, 제약 RA/PV 담당자용 어시스턴트.**
+**"규제문서를 근거·출처와 함께 검색하는 RAG"와 "업무 도구(마감·트리아지·보고서 초안)를 자율 호출하는 에이전트"를 MCP 규격으로 연결한, 제약 RA·PV 담당자용 어시스턴트.**
 
 - 사용자는 웹 챗 UI에서 질문한다 → FastAPI가 받아 에이전트에 넘긴다.
 - 에이전트는 질문 의도에 따라 **MCP 도구 6종** 중 필요한 것을 골라 호출한다.
@@ -22,7 +22,7 @@
 
 ```mermaid
 flowchart TB
-    U["👤 사용자 (RA/PV 담당자)<br/>web/index.html 챗 UI"] -->|"POST /chat"| API["⚙️ FastAPI 백엔드<br/>src/api/main.py"]
+    U["👤 사용자 (RA·PV 담당자)<br/>web/index.html 챗 UI"] -->|"POST /chat"| API["⚙️ FastAPI 백엔드<br/>src/api/main.py"]
     API --> AG["🤖 RA·PV 에이전트<br/>src/agent/agent.py<br/>(입구에서 PII 마스킹)"]
 
     AG <-->|"MCP 프로토콜<br/>(fastmcp.Client)"| MCP["🔌 FastMCP 서버<br/>src/mcp_server/server.py"]
