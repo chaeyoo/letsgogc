@@ -202,3 +202,68 @@ async def test_agent_triage_end_to_end():
     assert "김철수" not in r.answer and "1234" not in r.answer
     assert "김철수" not in str(r.trace)
     assert {x["type"] for x in r.redactions} == {"전화번호", "이름(호칭)"}
+
+
+# ---------------------------------------------------------------------------
+# v8 — PII 마스킹 표기 변형 봉합 (호칭+조사·외국인등록번호·전화 변형·환자 번호)
+# ---------------------------------------------------------------------------
+def test_redact_masks_name_followed_by_josa():
+    """호칭 뒤에 조사가 직결된 표기("홍길동님이", "김철수씨가")도 마스킹한다. (v8)
+
+    (?=[^가-힣]|$) 룩어헤드는 님/씨 뒤에 조사(한글)가 붙는 — 한국어에서 가장
+    흔한 — 표기를 전부 놓쳤다. 전화·주민번호가 숫자 룩어라운드로 봉합한 바로
+    그 '한글 직결' 사각지대가 이름 정규식에는 남아 있던 비대칭."""
+    r = redact("홍길동님이 어지러움을 호소했고, 김철수씨가 신고했습니다")
+    assert "홍길동" not in r.text and "김철수" not in r.text
+    assert r.counts.get("이름(호칭)") == 2
+
+
+def test_redact_josa_boundary_keeps_stoplist():
+    """조사 허용으로 매칭 면적이 넓어져도 일반 호칭어 오탐은 스톱리스트가 막는다. (v8)"""
+    r = redact("담당자님이 확인했고 어머님이 보호자로 동행했습니다")
+    assert not r.redacted
+
+
+def test_redact_masks_foreign_resident_number():
+    """외국인등록번호(뒤 7자리 첫 숫자 5~8)도 마스킹한다. (v8)
+
+    성별코드를 [1-4]로 좁히면 내국인만 잡히고, 완전한 식별번호인
+    외국인등록번호가 통째로 외부 API 경계를 통과한다."""
+    r = redact("외국인등록번호는 900101-5234567입니다")
+    assert "5234567" not in r.text
+    assert r.counts.get("주민등록번호") == 1
+
+
+def test_redact_phone_variant_notations():
+    """en-dash(–)·국제표기(+82, 0 생략)·괄호 지역번호 표기도 마스킹한다. (v8)
+
+    주민번호 패턴은 –를 받는데 전화 패턴만 못 받던 같은 파일 안의 구분자
+    비대칭 — 구분자 어휘가 좁으면 그만큼이 우회로다."""
+    r = redact("연락처는 010–1234–5678, +82 10-9999-8888, (02)345-6789")
+    assert r.counts.get("전화번호") == 3
+    for leaked in ("1234", "9999", "345-6789"):
+        assert leaked not in r.text
+
+
+def test_redact_patient_number_with_space():
+    """띄어 쓴 "환자 번호"도 잡는다 — 붙여 쓴 표기만 받으면 공백이 우회로다. (v8)"""
+    r = redact("환자 번호: A-1023 케이스입니다")
+    assert "A-1023" not in r.text
+    assert r.counts.get("환자/차트번호") == 1
+
+
+# ---------------------------------------------------------------------------
+# v8 — 라우팅 어휘를 코딩 사전과 공유
+# ---------------------------------------------------------------------------
+def test_route_common_symptom_case_to_triage():
+    """코딩 사전이 아는 일반 증상(두드러기 등)도 케이스 맥락과 결합하면 PV 도구로 간다. (v8)
+
+    이벤트 마커가 중대 어휘뿐이면 가이드 3-2의 예시("B캡슐 투여 후 두드러기…
+    인과성은?")가 검색으로 빠져 회피 응답이 된다 — 코딩 사전(coding.symptom_keywords)과
+    어휘를 공유해 사전 갱신이 라우팅에 자동 반영된다."""
+    assert _route_intent("환자가 B캡슐 투여 후 두드러기가 났고, 중단하니 호전됐습니다. 인과성은?") == "ae_triage"
+
+
+def test_route_symptom_regulation_question_stays_search():
+    """증상 어휘가 있어도 케이스 맥락(_AE_CASE_MARKERS)이 없는 규정 질문은 검색으로 남는다. (v8)"""
+    assert _route_intent("두드러기 이상사례 보고 기한은 며칠인가요?") == "search"

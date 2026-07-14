@@ -266,3 +266,31 @@ def test_redact_history_masks_block_content():
     assert "010-1111-2222" not in turns[1]["content"][1]["content"]
     assert turns[1]["content"][1]["tool_use_id"] == "t1"
     assert turns[2]["content"] == 42
+
+
+# ---------------------------------------------------------------------------
+# v8 — 오프라인 라우터의 인지일 승격 (조용한 폴백 금지)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_offline_awareness_date_extracted_from_message():
+    """메시지에 명시된 인지일이 도구 인자로 승격돼 기한 계산에 반영된다. (v8)
+
+    라우터가 case_description 만 전달하면 awareness_date 는 항상 빈 값이라
+    도구가 경고 없이 '오늘'로 폴백했다 — 사용자가 명시한 인지일이 조용히
+    무시되는, '조용한 폴백 금지' 원칙의 라우터 계층 위반."""
+    agent = RaAgent()
+    r = await agent.chat("환자가 A정 복용 후 중환자실에 입원했습니다. 인지일은 2026-07-01. 언제까지 보고해야 하나요?")
+    assert [t.name for t in r.tool_calls] == ["assess_adverse_event"]
+    assert "인지일 2026-07-01 기준" in r.answer
+
+
+@pytest.mark.asyncio
+async def test_offline_malformed_awareness_date_gets_loud_caveat():
+    """형식이 틀린 인지일은 라우터가 걸러 조용히 버리지 않고 그대로 전달해,
+    도구(triage)의 형식 오류 caveat 계약이 발화하게 한다. (v8)
+
+    라우터가 ISO 정규화·필터링을 하면 도구의 에러 계약을 층 아래에서
+    우회하는 형태가 된다(_guess_category 와 같은 규율)."""
+    agent = RaAgent()
+    r = await agent.chat("환자가 A정 복용 후 입원했습니다. 인지일은 2026-7-1. 보고 기한은?")
+    assert "형식이 아니" in r.answer  # 시끄러운 caveat

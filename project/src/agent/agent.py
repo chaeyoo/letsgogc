@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +22,7 @@ from fastmcp import Client
 from .. import config
 from ..mcp_server.server import mcp
 from ..observability import Trace, record_verification, timed
+from ..pv.coding import symptom_keywords
 from ..pv.redactor import redact
 from ..rag.synonyms import expand_query
 from ..rag.textutil import tokenize
@@ -410,6 +412,8 @@ class RaAgent:
             if intent == "ae_report":
                 # 케이스 서술 + '보고서 작성' 요청 → ICSR 초안 도구(트리아지+인과성+코딩+최소요건)
                 args = {"case_description": resolved}
+                if aware := _extract_awareness_date(resolved):
+                    args["awareness_date"] = aware
                 with timed(trace, "tool.draft_ae_report", "tool", {"args": args}):
                     data = (await mcp_client.call_tool("draft_ae_report", args)).data
                 tool_calls.append(ToolCall("draft_ae_report", args, _summarize(data)))
@@ -430,6 +434,8 @@ class RaAgent:
             if intent == "ae_triage":
                 # 구체적 케이스 서술 → PV 트리아지 도구(중대성 판정+기한 계산)
                 args = {"case_description": resolved}
+                if aware := _extract_awareness_date(resolved):
+                    args["awareness_date"] = aware
                 with timed(trace, "tool.assess_adverse_event", "tool", {"args": args}):
                     data = (await mcp_client.call_tool("assess_adverse_event", args)).data
                 tool_calls.append(ToolCall("assess_adverse_event", args, _summarize(data)))
@@ -670,13 +676,39 @@ def _grounding_coverage(query: str, results: list[dict]) -> float:
 
 
 _AE_CASE_MARKERS = ("환자", "복용 후", "투여 후", "복용했", "투여했", "접종 후")
+# 사건 어휘 = 중대·일반 총칭 + PV 코딩 사전의 증상 표면형 전체(v8).
+# 이전에는 중대 어휘만 있어 "두드러기·발진" 같은 일반 증상 케이스가
+# 검색으로 빠져 회피됐다 — 코딩 사전과 어휘를 공유해 사전 갱신이 라우팅에
+# 자동 반영된다. 케이스 맥락(_AE_CASE_MARKERS)과의 AND 조건은 유지하므로
+# "두드러기 보고 기한은?" 같은 규정 질문은 여전히 검색으로 간다(과잉 매칭 방지).
 _AE_EVENT_MARKERS = (
     "사망", "입원", "생명", "쇼크", "아나필락시스", "중환자실", "기형", "장애",
     "부작용", "이상사례", "이상반응",
-)
+) + symptom_keywords()
 
 
 _AE_REPORT_MARKERS = ("보고서", "초안", "kaers", "icsr", "보고서 작성", "보고서 만들")
+
+
+# 인지일 표기 — 값 부분은 일부러 느슨하게 잡는다(아래 docstring 참고).
+_AWARENESS_RE = re.compile(r"인지일\s*[:은는]?\s*(\d{4}[-./]\d{1,2}[-./]\d{1,2})")
+
+
+def _extract_awareness_date(message: str) -> str:
+    """서술 속 인지일을 도구 인자로 승격한다 — 없으면 "" (v8).
+
+    오프라인 라우터가 case_description 만 전달하면 awareness_date 는 항상
+    빈 값이라, 사용자가 "인지일은 2026-07-01" 이라고 명시해도 도구가 경고
+    없이 '오늘'로 폴백했다 — 15일 기한 케이스라면 기한이 그만큼 밀린 값이
+    caveat 도 없이 나가는, '조용한 폴백 금지' 원칙의 라우터 계층 위반.
+
+    값 표기는 느슨하게 잡아 그대로 전달한다 — "2026-7-1"·"2026/07/01" 같은
+    형식 오류의 판정과 caveat 부착은 도구(triage)의 계약이므로, 라우터가
+    여기서 정규화하거나 걸러 그 계약을 우회하지 않는다(_guess_category 와
+    같은 규율: 안전장치를 만든 층 아래에서 무력화하지 않는다).
+    """
+    m = _AWARENESS_RE.search(message)
+    return m.group(1) if m else ""
 
 
 def _route_intent(message: str) -> str:

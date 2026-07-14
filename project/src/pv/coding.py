@@ -162,6 +162,23 @@ def suggest_candidates(case_text: str, confirmed: list[CodedTerm]) -> list[Candi
     return [t for _, t in hits]
 
 
+def symptom_keywords() -> tuple[str, ...]:
+    """사전이 아는 증상 표면형 전체 — 라우팅 등 '감지' 용도 (v8).
+
+    오프라인 라우터(agent._route_intent)가 케이스 서술을 PV 도구로 보낼지
+    판단할 때 이 사전과 같은 어휘를 쓰게 해, '코딩 사전은 아는데 라우팅
+    마커는 모르는' 어휘 불일치를 구조적으로 없앤다 — 마커가 중대 어휘
+    (사망·입원 등)뿐이면 "두드러기" 같은 일반 증상 케이스가 검색으로 빠져
+    회피 응답이 된다(가이드 3-2 예시가 실제로 실패하던 경로). 사전에 항목을
+    추가하면 라우팅 어휘도 자동으로 따라온다.
+    """
+    words: list[str] = []
+    for _pt, _pt_en, _soc, synonyms in _TERM_DICT:
+        words.extend(synonyms)
+    words.extend(llt for llt, _pt, _pt_en, _soc in _LLT_REFERENCE)
+    return tuple(dict.fromkeys(words))
+
+
 def flag_uncoded_expressions(
     case_text: str, coded: list[CodedTerm], candidates: list[CandidateTerm]
 ) -> list[str]:
