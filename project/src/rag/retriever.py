@@ -166,8 +166,14 @@ class HybridRetriever:
     def _candidate_indices(self, as_of: str, include_superseded: bool) -> list[int]:
         """버전 인지 필터를 통과한 청크 인덱스만 반환(세 검색 모드 공통 후보군).
 
-        - 폐지(superseded) 문서는 기본 제외(이력 조회 시 include_superseded=True 포함).
-        - as_of(기준일)가 주어지면 "그 시점에 시행 중이던 버전"을 반환한다:
+        - **기본 경로(as_of 미지정)는 as_of=오늘과 동치다(v9)** — 종전에는
+          무 as_of 경로가 status 만 보고 시행일을 보지 않아, 미래 시행일의
+          active 문서가 '현행'으로 반환되고, 그 문서로 대체될 폐지본(후속본이
+          아직 시행 전이라 **오늘의 실제 현행**)은 폐지 필터에 걸려 은폐됐다.
+          v8 이 as_of 경로에서 봉합한 '두 필터의 교집합이 공집합' 조합 결함과
+          동형이 무 as_of 경로에 남아 있던 것 — 경로를 하나의 구간 판정으로
+          통일해 코드 갈래 자체를 줄인다(같은 결함이 갈래마다 재발하지 않도록).
+        - as_of(기준일) 기준 "그 시점에 시행 중이던 버전"을 반환한다:
             · 그 시점에 아직 시행 전인 문서는 제외하고,
             · **당시 시행 중이던 폐지본은 포함한다** — 폐지본이라도 시행일 ≤ as_of
               < 후속본 시행일 구간이면 그때의 현행이다. '폐지본 기본 제외'를
@@ -176,30 +182,38 @@ class HybridRetriever:
               지원한다"는 주장이 정작 개정 이력이 있는(=시점 조회가 필요한)
               규정에서만 무너지는 논리적 비약이었다.
         - fail-closed: 시행일을 해석할 수 없는 청크(또는 후속본 시행일 미상)는
-          시점 조회에서 제외한다 — '언제부터 유효한지 모르는 문서'를 특정 시점의
-          현행으로 제시하지 않는다. 크래시도, 조용한 통과도 아니다: 데이터 결함
-          자체는 preflight(코퍼스 무결성)가 파일명과 함께 보고하고, 여기서는
-          그 결함이 검색 전체를 죽이거나(예외 전파) 오답에 섞이는(무필터 통과)
-          두 나쁜 방향을 모두 차단한다.
+          제외한다 — '언제부터 유효한지 모르는 문서'를 특정 시점의 현행으로
+          제시하지 않는다. 크래시도, 조용한 통과도 아니다: 데이터 결함 자체는
+          preflight(코퍼스 무결성)가 파일명과 함께 보고하고, 여기서는 그 결함이
+          검색 전체를 죽이거나(예외 전파) 오답에 섞이는(무필터 통과) 두 나쁜
+          방향을 모두 차단한다. 경로 통일의 트레이드오프로 이 fail-closed 가
+          **기본 검색에도 적용된다**(종전에는 무 as_of 경로에서 시행일 결함
+          문서도 검색됐다) — preflight 가 시행일 유효성을 기동 전에 보증하므로
+          실질 위험은 없고, 결함이 배포를 뚫었을 때 '유효기간 미상 문서'가
+          현행으로 나가는 것보다 안전한 방향이다.
+        - 잠재 상호작용(현 코퍼스 미발생): 후속본이 아직 시행 전인 폐지본은
+          include_superseded=False 여도 '오늘의 현행'으로 기본 검색에 반환된다.
+          답변 검증 게이트(superseded_cited)는 이력 조회가 아닐 때 폐지본 인용을
+          경고하므로, 그런 코퍼스에서는 '오늘 현행인 폐지본' 인용에 경고가 붙을
+          수 있다 — 현 코퍼스는 유일한 폐지본 REG-013 의 후속본 REG-005 가 이미
+          시행 중이라 이 경로가 발화하지 않으며(회귀는 tests/test_versioning.py
+          의 합성 청크 테스트로 고정), 발화하는 코퍼스를 들일 때는 게이트의
+          허용 규약(src/agent·src/verify 관할)을 함께 조정해야 한다.
 
         as_of 형식 오류는 여기서 즉시 ValueError 다 — 사용자 경로는 MCP 도구
         경계(search_regulations)가 검증해 명시적 에러로 답하고, 직접 호출자
         (eval·테스트)의 형식 오류는 조용히 무시하는 것보다 시끄럽게 깨지는 것이 옳다.
         """
-        cutoff = _dt.date.fromisoformat(as_of) if as_of else None
+        cutoff = _dt.date.fromisoformat(as_of) if as_of else _dt.date.today()
         out: list[int] = []
         for i, c in enumerate(self.store.chunks):
-            if cutoff is None:
-                if c.status == "superseded" and not include_superseded:
-                    continue
-            else:
-                eff = self._chunk_eff[i]
-                if eff is None or eff > cutoff:
-                    continue  # 시행일 미상(fail-closed) 또는 그 시점에 시행 전
-                if c.status == "superseded" and not include_superseded:
-                    succ = self._doc_eff.get(c.superseded_by)
-                    if succ is None or succ <= cutoff:
-                        continue  # 후속본 시행일 미상이거나 이미 대체된 시점
+            eff = self._chunk_eff[i]
+            if eff is None or eff > cutoff:
+                continue  # 시행일 미상(fail-closed) 또는 그 시점에 시행 전
+            if c.status == "superseded" and not include_superseded:
+                succ = self._doc_eff.get(c.superseded_by)
+                if succ is None or succ <= cutoff:
+                    continue  # 후속본 시행일 미상이거나 이미 대체된 시점
             out.append(i)
         return out
 
@@ -226,6 +240,15 @@ class HybridRetriever:
         # 정규화는 '후보군 안에서' 수행해야 스케일이 왜곡되지 않는다.
         vec_scores = [cosine(qv, self.store.vectors[i]) for i in idxs]
         bm_scores = [bm_scores_all[i] for i in idxs]
+        # 무신호 계약(v9): 전 후보의 벡터·BM25 '원점수'가 모두 0이면 빈 결과.
+        # 안정 정렬은 전부 0점인 후보를 코퍼스 첫 문서 순서 그대로 내보내
+        # 빈 질의·완전 무관 질의가 임의 문서를 score 0.0 의 '검색 결과'로 달고
+        # 나가는 가짜 순위가 됐다(에이전트는 SCORE_FLOOR 로 회피하지만, 직접
+        # 호출자·eval 은 그 순위를 그대로 소비한다). 관련도 신호가 전혀 없으면
+        # 결과가 없다고 답하는 것이 맞다 — 판정은 정규화 전 원점수 기준이다
+        # (_minmax 는 '전원 동점'을 전원 0으로 만들어 유신호와 무신호를 구분 못 한다).
+        if max(vec_scores, default=0.0) <= 0.0 and max(bm_scores, default=0.0) <= 0.0:
+            return []
         vn, bn = _minmax(vec_scores), _minmax(bm_scores)
         combined = [
             Scored(chunk=self.store.chunks[i], score=self.alpha * vn[j] + (1 - self.alpha) * bn[j])
@@ -275,7 +298,15 @@ class HybridRetriever:
               현 가중·prior 가 prefix 포함 coverage 기준으로 보정되어 있고,
               소코퍼스에서는 제목 문맥이 coverage 에 실리는 편이 유리했다.
               재보정 없이 이 정의만 바꾸면 안 된다).
-          (2) phrase   — 질의 원문이 본문에 통째로 등장하는가
+          (2) phrase   — 질의 원문(공백 정리·소문자)이 '청크 텍스트'에 통째로
+              등장하는가. 여기서 '청크 텍스트'도 coverage 와 동일하게 컨텍스트
+              prefix("[제목 > 섹션]")를 **포함한 대조**다 — 즉 질의가 문서
+              제목·섹션 헤더 문자열과 일치해도 구문 신호가 켜지며, 이는
+              coverage 의 prefix 포함과 같은 **의도된 트레이드오프**다
+              (제목형 질의가 해당 문서 청크에 정확 매칭 보너스를 받는 방향.
+              현 가중·prior 와 개발셋 Hit@1 1.000 이 이 정의 기준으로 고정되어
+              있으므로, '본문만' 대조로 바꾸려면 coverage 정의 변경과 마찬가지로
+              재보정 없이는 안 된다).
           (3) section  — 질의 토큰이 '섹션 제목'에 있는가(같은 문서 안에서
               정답 섹션을 고르는 신호 — 문서 제목은 섞지 않는다)
           (4) title    — 문서 제목 정합: 제목 토큰 중 질의에 등장하는 '비율'.
@@ -366,7 +397,9 @@ class HybridRetriever:
     ) -> list[Scored]:
         """최종 검색: (질의 확장) → 하이브리드 top_k → 리랭킹 → 상위 rerank_n 반환.
 
-        as_of / include_superseded 로 버전 인지 검색을 제어한다.
+        as_of / include_superseded 로 버전 인지 검색을 제어한다. as_of 미지정
+        기본 검색은 as_of=오늘과 동치이고(구간 판정·fail-closed 의 트레이드오프는
+        _candidate_indices 참고), 무신호 질의(전 후보 원점수 0)는 빈 결과다.
 
         질의 확장은 '1단계 회수'에 전 가중으로 적용하고("부작용"→"이상사례"
         같은 어휘 불일치를 메워 recall 확보), 2단계 리랭킹은 원 질의 토큰을

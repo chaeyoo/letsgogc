@@ -19,10 +19,46 @@ REG-005 §2가 명시하듯 실무는 WHO-UMC 또는 Naranjo 척도를 쓴다.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # WHO-UMC 판단 요소별 감지 키워드 (케이스 자유 서술 대상)
 _TEMPORAL_MARKERS = ["복용 후", "투여 후", "접종 후", "복용 직후", "투여 직후", "맞은 후", "먹은 후", "복용하고", "투여하고"]
+
+# 부정 어미 일반 규칙(v9) — "호전되지 않았다"·"재발 없음"처럼 긍정 어휘 뒤에
+# 부정이 곧바로 붙는 활용형은 열린 집합이라(되지 않/하지는 않/은 없/없음/이 아니…)
+# 닫힌 목록 열거로는 새 활용형마다 같은 결함이 재발한다("호전되지 않"이 목록에
+# 없어 IMPROVE 의 "호전"이 먼저 매칭 → 반증이 양성으로 뒤집힘). 긍정 어휘 매칭
+# '직후 N자 이내'의 부정 어미(않·없·아니)를 검사해, 부정이 확인되면 '판단 불가'가
+# 아니라 반대 상태(정보가 있는 반증)로 매핑한다 — 기존 3상태 체계 유지.
+# "아닌"은 완성형 음절이라 "아니"를 부분 문자열로 포함하지 않는다 — 별도 나열.
+_NEGATION_TAIL_RE = re.compile(r"않|없|아니|아닌")
+# "되지 않"·"하지는 않"·"은 없음" 이 들어오는 최소 폭 — 더 넓히면 다음 절의
+# 무관한 부정("호전됐고, 발열은 없다")까지 삼켜 반대 방향 오탐이 된다.
+_NEGATION_SPAN = 6
+
+
+def _negated_after(text: str, end: int) -> bool:
+    """text[end:] 기준 N자 이내에 부정 어미(않·없·아니)가 있는가."""
+    return bool(_NEGATION_TAIL_RE.search(text[end : end + _NEGATION_SPAN]))
+
+
+def _polarity(win: str, positive_words: list[str]) -> str:
+    """창 안의 긍정 어휘를 부정 어미 규칙으로 판정 — positive | negated | absent.
+
+    부정된 출현과 부정 없는 출현이 공존하면 positive 를 우선한다
+    ("처음엔 호전되지 않다가 이후 호전" — 마지막에 성립한 긍정 서술이 경과다).
+    """
+    negated = False
+    for w in positive_words:
+        start = 0
+        while (idx := win.find(w, start)) >= 0:
+            if _negated_after(win, idx + len(w)):
+                negated = True
+            else:
+                return "positive"
+            start = idx + 1
+    return "negated" if negated else "absent"
 
 # 경과(outcome) 창 기반 감지 (v8) — "중단하니"·"다시 복용하니" 같은 결과
 # 미포함 마커는 뒤따르는 경과가 호전이든 악화든 무조건 양성이 됐다.
@@ -72,8 +108,21 @@ def _detect(case_text: str, markers: list[str]) -> bool:
 
 
 def _window(text: str, start_markers: list[str], stop_markers: list[str]) -> str | None:
-    """첫 start 마커부터 (있다면) 다음 stop 마커 직전까지의 경과 서술 창."""
-    starts = [text.find(m) for m in start_markers if m in text]
+    """첫 (부정되지 않은) start 마커부터 다음 stop 마커 직전까지의 경과 서술 창.
+
+    맥락 마커 자체가 부정된 서술("약을 중단하지 않았는데도 호전")에서는 그
+    경과 자체가 일어난 적이 없다 — 부정된 마커로 창을 열면 뒤따르는 "호전"이
+    존재하지 않는 dechallenge 의 양성 신호로 둔갑한다(v9). 마커 직후의
+    부정 어미(않·없)를 같은 일반 규칙으로 검사해 그 출현은 건너뛴다.
+    """
+    starts: list[int] = []
+    for m in start_markers:
+        idx = text.find(m)
+        while idx >= 0:
+            if not _negated_after(text, idx + len(m)):
+                starts.append(idx)
+                break
+            idx = text.find(m, idx + 1)
     if not starts:
         return None
     start = min(starts)
@@ -92,8 +141,12 @@ def _dechallenge_state(case_text: str) -> str:
         return "unknown"
     if any(w in win for w in _NOT_IMPROVE_WORDS):
         return "not_improved"
-    if any(w in win for w in _IMPROVE_WORDS):
+    polarity = _polarity(win, _IMPROVE_WORDS)
+    if polarity == "positive":
         return "improved"
+    if polarity == "negated":
+        # "호전되지 않았다"는 판단 불가가 아니라 '호전 안 됨'이 확인된 반증이다
+        return "not_improved"
     return "unknown"
 
 
@@ -104,8 +157,13 @@ def _rechallenge_state(case_text: str) -> str:
         return "unknown"
     if any(w in win for w in _NO_RECUR_WORDS):
         return "no_recurrence"
-    if any(w in win for w in _RECUR_WORDS):
+    polarity = _polarity(win, _RECUR_WORDS)
+    if polarity == "positive":
         return "recurred"
+    if polarity == "negated":
+        # "재발 없음"(조사 생략형)처럼 닫힌 목록 밖의 부정 활용 — 부정이 곧
+        # 반대 상태(재발하지 않음)이므로 no_recurrence 로 매핑한다
+        return "no_recurrence"
     return "unknown"
 
 
@@ -128,6 +186,8 @@ def assess_causality(case_text: str) -> CausalityResult:
       - 재투여 후 '재발하지 않음'(반증 신호)                           → Possible 상한
       - 시간관계 + 중단 후 호전 (대체원인 미확인/배제)                 → Probable
       - 시간관계 있음(대체원인 존재 포함)                              → Possible
+      - 시간관계 없음 + 중단/재투여 양성 경과(시간관계 함의)           → Possible
+        (경과가 신호인데 투여 시점 서술이 없다 — 확인 질문과 함께 낮게 제안)
       - 시간관계 없음 + 대체원인 존재                                  → Unlikely
       - 신호 자체가 없음                                               → Unassessable
     정보가 서술에 없으면 '충족'으로 치지 않는다 — 등급은 아래로만 보수 적용된다.
@@ -194,9 +254,27 @@ def assess_causality(case_text: str) -> CausalityResult:
                 )
             )
         )
+    elif dechallenge or rechallenge:
+        # 중단/재투여 양성 경과는 감지됐는데 투여 시점 서술이 없는 케이스 —
+        # 이대로 Unassessable 로 떨어뜨리면 rationale("감지되지 않는다")이
+        # 감지된 신호와 모순된다(v9). WHO-UMC 근사의 보수 원칙대로 낮은 등급
+        # (Possible)에 머물고, 시간관계 확인 질문(missing_info)으로 넘긴다.
+        suggested = POSSIBLE
+        rationale = (
+            "중단/재투여 후 경과(호전·재발)가 시간관계를 함의하나 투여 시점 서술이 "
+            "없어 Possible 이상 올리지 않는다 — 투여~발생의 시간적 선후관계 확인이 필요하다."
+        )
     elif alternative:
         suggested = UNLIKELY
         rationale = "시간적 선후관계가 서술에 없고 대체 원인(병용약·기저질환) 가능성이 있다."
+    elif de_state != "unknown" or re_state != "unknown" or alt_state != "unknown":
+        # 반증(악화·미재발)이나 대체원인 배제만 있는 케이스 — 신호가 '없는' 것이
+        # 아니므로 rationale 이 감지 사실을 반영해야 한다(모순 문장 방지, v9).
+        suggested = UNASSESSABLE
+        rationale = (
+            "시간적 선후관계가 서술에서 감지되지 않아 평가가 곤란하다 — 중단/재투여 "
+            "경과 등 일부 신호는 있으나 투여~발생 시간관계 확인이 선행되어야 한다."
+        )
     else:
         suggested = UNASSESSABLE
         rationale = "인과성 판단 요소(시간관계·경과·대체원인)가 서술에서 감지되지 않는다."

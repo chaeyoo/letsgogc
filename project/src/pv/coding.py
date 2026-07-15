@@ -87,6 +87,26 @@ _UNCODED_SYMPTOM_RE = re.compile(
     r"[가-힣]*(?:저릿|저리|쑤시|욱신|따끔|화끈|뻐근|결리|시큰)[가-힣]*"
 )
 
+# 1계층 키워드의 '전방 합성어' 배제(v9) — "위경련"(위장관 경련성 복통)·
+# "근육경련"(근경련)의 '경련'은 신경계 발작(Seizure)이 아닌데, 부분 일치는
+# 이를 자동 '확정'해 버린다. 1계층은 자동 확정 계층이라 오매핑이 곧 시그널
+# 집계의 구조적 오염이다(황달≠간손상 분리와 같은 원칙). 키워드별로 앞에
+# 붙으면 다른 의미가 확정되는 접두 어절을 닫힌 목록으로 배제한다.
+_FALSE_COMPOUND_PREFIXES: dict[str, tuple[str, ...]] = {
+    "경련": ("위", "근육"),
+}
+
+
+def _keyword_position(low: str, keyword: str) -> int:
+    """키워드의 첫 유효 출현 위치 — 배제 접두가 붙은 출현은 건너뛴다. 없으면 -1."""
+    prefixes = _FALSE_COMPOUND_PREFIXES.get(keyword, ())
+    start = 0
+    while (idx := low.find(keyword, start)) >= 0:
+        if not any(low[max(0, idx - len(p)) : idx] == p for p in prefixes):
+            return idx
+        start = idx + 1
+    return -1
+
 
 @dataclass
 class CodedTerm:
@@ -111,7 +131,9 @@ def code_terms(case_text: str) -> list[CodedTerm]:
     for pt, pt_en, soc, keywords in _TERM_DICT:
         if pt in seen_pt:
             continue
-        positions = [(low.find(k.lower()), k) for k in keywords if k.lower() in low]
+        positions = [
+            (p, k) for k in keywords if (p := _keyword_position(low, k.lower())) >= 0
+        ]
         if not positions:
             continue
         pos, keyword = min(positions)

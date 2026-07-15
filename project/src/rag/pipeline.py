@@ -84,8 +84,11 @@ class RagPipeline:
         as_of: str = "",
         include_superseded: bool = False,
     ) -> RetrievedContext:
-        top_k = top_k or config.RETRIEVE_TOP_K
-        rerank_n = rerank_n or config.RERANK_TOP_N
+        # '미지정'(None) 판정은 is None 으로 — `or` 는 0 도 미지정으로 취급해
+        # top_k=0(후보 0개 요청)이 조용히 기본값 8로 승격되는 falsy 함정이 된다
+        # (호출자는 0건을 요청했는데 8건 검색이 도는 조용한 확대).
+        top_k = config.RETRIEVE_TOP_K if top_k is None else top_k
+        rerank_n = config.RERANK_TOP_N if rerank_n is None else rerank_n
         results = self.retriever.retrieve(
             query,
             top_k=top_k,

@@ -86,7 +86,26 @@ from dataclasses import dataclass, field
 # 근무일→역일 환산은 실제 달력 기한을 바꾸는 오류라 단위를 구분해 대조해야 한다.
 # '주(週)'의 lookahead: LLM이 "15일"을 "약 2주"로 패러프레이즈하면 근거에 없는
 # 환산값이 생기고, 마감일 환산 오차는 그 자체가 리스크다.
-_UNIT_ALT = r"근무일|영업일|개월|주일|시간|일|년|주(?![가-힣])|회|세|%"
+# lookahead 는 전면 한글 배제(`(?![가-힣])`)가 아니라 **비단위 합성어만** 배제한다
+# (v9): 한국어에서 '주'는 조사·어미·'간(間)'이 직결되는 표기("2주간 보관",
+# "약 2주입니다", "2주로 연장")가 가장 흔한데, 전면 배제는 그 표기의 수집을
+# 통째로 차단했다 — "15일 → 약 2주간" 환산 위조가 그 표기로만 오면 조용히
+# 통과하고, 근거가 "2주간"이라 쓰면 옳은 답변 "2주"에 미확인 오탐이 붙는
+# 양방향 결함(\b 가 한글 직결에서 경계가 아니던 v6 교훈이 검증기 자신의 단위
+# 표기에는 미전파된 형태). '주년·주기·주차·주말·주택·주주'만 좁게 배제한다.
+# '달'(고유어 개월)·'퍼센트'(% 철자 표기)도 같은 계열의 미수집 표기라 단위로
+# 수집하고 canonical(개월·%)로 정규화한다 — 환산이 아니라 표기 변형이다.
+_UNIT_ALT = r"근무일|영업일|개월|퍼센트|주일|시간|일|년|주(?!년|기|차|말|택|주)|달(?!러)|회|세|%"
+# 표기 변형 단위 → canonical 단위 ("2주일"="2주", "6달"="6개월", "90 퍼센트"="90%").
+_UNIT_ALIASES = {"주일": "주", "달": "개월", "퍼센트": "%"}
+
+
+def _norm_unit(unit: str) -> str:
+    """단위 표기 변형을 canonical 로 접는다 — 모든 수집 지점이 이 한 함수를
+    거쳐야 답변·근거·질문의 대조가 표기와 무관하게 대칭이 된다."""
+    return _UNIT_ALIASES.get(unit, unit)
+
+
 # 선행 룩비하인드 (?<![\d.\-]) : 날짜에 조사처럼 '일'이 붙은 표기("2026-07-25일이다")
 # 에서 '25일'이 기간 클레임으로 오추출되는 오염을 막는다 — 근거 쪽에서 오추출되면
 # 답변의 지어낸 '25일 기한'이 그 오염된 값에 지지되어 통과한다(한국어 날짜
@@ -291,15 +310,22 @@ class VerificationResult:
 
     @property
     def case_origin(self) -> list[str]:
-        """지지 근거가 사용자 케이스 서술뿐인 클레임 — 경고는 아니지만 등급이 다르다.
+        """케이스 서술 유래 신호(from_case)가 붙은 클레임 — 경고와 등급이 다르다.
 
         '케이스는 사실'이므로 답변이 케이스를 재서술하는 것은 정당하다(경고하면
         보고서 초안마다 오탐 — alert fatigue). 그러나 '사실'이라는 성질이 그 값을
         규정 클레임의 근거로 승격시키지는 않는다 — 케이스의 "30일간 복용"이
         답변의 "보고 기한 30일"을 지지하면 그것은 사용자 서술의 승격이다.
         기계는 두 경우를 구분할 수 없으므로 차단 대신 **라벨**로 노출한다:
-        감사 로그·UI 가 '규정/도구 근거'와 '사용자 서술 근거'를 구분해 읽는다."""
-        return [c.claim for c in self.checks if c.supported and c.from_case]
+        감사 로그·UI 가 '규정/도구 근거'와 '사용자 서술 근거'를 구분해 읽는다.
+
+        존재 축(supported=True, 케이스 계층만 지지)만이 아니라 **방향 충돌의
+        from_case**(케이스에 같은 방향 표현이 있어 '재서술 vs 왜곡'이 모호한
+        경고)도 포함한다(v9) — 종전에는 supported=True 를 요구해 방향축 라벨이
+        summary·계기판(case_labeled)·감사 로그 어디에도 집계되지 않았다:
+        라벨은 죽어도 소리가 없다는 이 라벨 자신의 원칙이 방향축에는 적용되지
+        않던 빈틈이다."""
+        return [c.claim for c in self.checks if c.from_case]
 
     @property
     def ok(self) -> bool:
@@ -325,6 +351,25 @@ class VerificationResult:
         }
 
 
+# 검증 축의 정본 목록(v9) — 계기판(GateStats)과 preflight 자가 테스트의 축
+# 우주는 이 목록에서 파생된다. 종전에는 observability.GateStats._AXES 라는
+# 수동 복제 튜플이 앵커였는데, 그러면 검증기에 새 축을 추가하고 observability
+# 를 안 건드리는 가장 개연성 높은 부분 변경에서 메타 검사가 통과한 채 자가
+# 테스트 없는 축이 배포된다 — "새 축 추가 시 자가 테스트가 구조로 강제된다"
+# 는 주장의 숨은 전제('새 축은 반드시 _AXES 에도 등록된다')가 검사되지 않는
+# 형태였다. 정본을 축의 산지(검증기)에 두고, summary() 키와의 일치는
+# 테스트(test_preflight)가 고정한다.
+#   WARNING_AXES: 응답을 경고 상태로 만들거나 경고 문구를 바꾸는 축 —
+#     preflight 자가 테스트는 이 전 축에 '심은 오류' 케이스를 가져야 한다.
+#   LABEL_AXES: ok 를 유지한 채 등급만 구분하는 라벨 축 — 라벨은 죽어도
+#     소리가 없으므로 역시 자가 테스트 커버리지를 강제한다.
+WARNING_AXES = (
+    "unsupported", "direction_conflicts", "role_conflicts",
+    "question_origin", "superseded_cited",
+)
+LABEL_AXES = ("case_origin",)
+
+
 @dataclass(frozen=True)
 class _Occurrence:
     display: str                          # 답변 속 원문 표기
@@ -344,14 +389,14 @@ def _numeric_forms(text: str) -> set[tuple[str, str]]:
     """
     text = _normalize(text)
     forms = {
-        (m.group(1).lstrip("0") or "0", "주" if m.group(2) == "주일" else m.group(2))
+        (m.group(1).lstrip("0") or "0", _norm_unit(m.group(2)))
         for m in _NUM_UNIT_RE.finditer(text)
     }
     for m in _RANGE_RE.finditer(text):  # 범위 하한
-        unit = "주" if m.group(2) == "주일" else m.group(2)
+        unit = _norm_unit(m.group(2))
         forms.add((m.group(1).lstrip("0") or "0", unit))
     for m in _HYPHEN_RANGE_RE.finditer(text):  # 하이픈 범위 — 두 변 모두(v8)
-        unit = "주" if m.group(3) == "주일" else m.group(3)
+        unit = _norm_unit(m.group(3))
         forms.add((m.group(1).lstrip("0") or "0", unit))
         forms.add((m.group(2).lstrip("0") or "0", unit))
     for m in _NATIVE_RE.finditer(text):
@@ -369,7 +414,7 @@ def _qualifier_map(text: str) -> dict[tuple[str, str], set[str]]:
     text = _normalize(text)
     out: dict[tuple[str, str], set[str]] = {}
     for m in _QUAL_RE.finditer(text):
-        unit = "주" if m.group(2) == "주일" else m.group(2)
+        unit = _norm_unit(m.group(2))
         key = (m.group(1).lstrip("0") or "0", unit)
         out.setdefault(key, set()).add(_qual_class(m.group(3)))
     for m in _NATIVE_QUAL_RE.finditer(text):
@@ -432,14 +477,14 @@ def _occurrences(answer: str) -> list[_Occurrence]:
 
     for m in _NUM_UNIT_RE.finditer(answer):
         num = m.group(1).lstrip("0") or "0"
-        unit = "주" if m.group(2) == "주일" else m.group(2)
+        unit = _norm_unit(m.group(2))
         _add(f"{num}{unit}", ((num, unit),), "numeric")
     for m in _RANGE_RE.finditer(answer):
         num = m.group(1).lstrip("0") or "0"
-        unit = "주" if m.group(2) == "주일" else m.group(2)
+        unit = _norm_unit(m.group(2))
         _add(f"{num}{unit}", ((num, unit),), "numeric")
     for m in _HYPHEN_RANGE_RE.finditer(answer):  # 하이픈 범위 — 두 변을 별개 클레임으로(v8)
-        unit = "주" if m.group(3) == "주일" else m.group(3)
+        unit = _norm_unit(m.group(3))
         for g in (m.group(1), m.group(2)):
             num = g.lstrip("0") or "0"
             _add(f"{num}{unit}", ((num, unit),), "numeric")
@@ -463,7 +508,13 @@ def _snippet(trusted: str, form: tuple[str, str], kind: str, width: int = 34) ->
         pat = rf"\d{{4}}-{re.escape(form[0])}|--{re.escape(form[0])}"
     else:
         num, unit = form
-        unit_pat = "주일?" if unit == "주" else re.escape(unit)
+        # canonical 단위로 지지된 클레임의 스니펫은 신뢰 소스의 '표기 변형'
+        # 원문에서도 찾아야 한다(근거가 "6달"이라 쓰고 답변이 "6개월"인 경우).
+        unit_pat = {
+            "주": "주일?",
+            "개월": "(?:개월|달)",
+            "%": "(?:%|퍼센트)",
+        }.get(unit, re.escape(unit))
         pat = rf"(?<!\d)0*{re.escape(num)}\s*{unit_pat}"
     m = re.search(pat, trusted)
     if not m:  # 고유어 표기로 지원된 경우
@@ -536,6 +587,25 @@ def verify_answer(
     facts_quals = _qualifier_map(facts) if facts else {}
     q_nums, q_dates = extract_claims(question) if question else (set(), set())
     q_partials = (_partial_dates(question) | {d[5:] for d in q_dates}) if question else set()
+    # 질문의 방향·역할 지도(v9) — from_question 완화는 존재 축에만 있었다:
+    # 사용자의 틀린 전제("15일 이후에 하면 되나요?")를 **정정**하는 옳은 답변
+    # ("15일 이후가 아니라 이내입니다")은 그 전제를 재서술할 수밖에 없는데,
+    # 방향·역할 충돌에는 전제 라벨이 배선되지 않아 완화 없는 '컴플라이언스
+    # 오류' 경고가 붙었다(축 × 완화 라벨 매트릭스의 빈 칸 — 옳은 답변에 붙는
+    # 오탐은 미탐과 같은 등급의 결함이다). 존재 축과 동일한 원칙으로, 경고를
+    # 끄지 않고 **종류만 조정**한다(from_question 라벨 + '전제 확인' 문구).
+    q_quals = _qualifier_map(question) if question else {}
+    q_date_quals = _date_qualifier_map(question) if question else {}
+    q_partial_quals = _partial_date_qualifier_map(question) if question else {}
+    norm_question = _normalize(question) if question else ""
+    q_roles: dict[str, set[str]] = {
+        role: {m.group(1) for m in rre.finditer(norm_question)}
+        for role, rre in _ROLE_ANSWER_RE.items()
+    } if question else {}
+    q_roles_partial: dict[str, set[str]] = {
+        role: {m.group(1) for m in rre.finditer(norm_question)}
+        for role, rre in _ROLE_ANSWER_PARTIAL_RE.items()
+    } if question else {}
 
     for occ in _occurrences(answer):
         kind = occ.kind
@@ -594,7 +664,7 @@ def verify_answer(
     # (허용 canonical 형태들, 한정어 단어, 표시용 표기) — 숫자 표기 + 고유어 표기
     answer_quals: list[tuple[tuple[tuple[str, str], ...], str, str]] = []
     for m in _QUAL_RE.finditer(norm_answer):
-        unit = "주" if m.group(2) == "주일" else m.group(2)
+        unit = _norm_unit(m.group(2))
         key = (m.group(1).lstrip("0") or "0", unit)
         answer_quals.append(((key,), m.group(3), f"{key[0]}{key[1]}"))
     for m in _NATIVE_QUAL_RE.finditer(norm_answer):
@@ -611,9 +681,11 @@ def verify_answer(
                 continue
             seen_dir.add(display)
             in_facts = any(cls in facts_quals.get(f, set()) for f in forms)
+            in_q = any(cls in q_quals.get(f, set()) for f in forms)
             result.checks.append(
                 ClaimCheck(display, "direction", False,
-                           evidence=_snippet(trusted, key, "numeric"), from_case=in_facts)
+                           evidence=_snippet(trusted, key, "numeric"),
+                           from_question=in_q, from_case=in_facts)
             )
 
     # 날짜 방향 한정어 대조 — 존재 대조를 통과한 날짜에 한해, 답변의 한정어
@@ -636,6 +708,7 @@ def verify_answer(
             result.checks.append(
                 ClaimCheck(display, "direction", False,
                            evidence=_snippet(trusted, (d, ""), "date"),
+                           from_question=cls in q_date_quals.get(d, set()),
                            from_case=cls in facts_date_quals.get(d, set()))
             )
 
@@ -659,6 +732,7 @@ def verify_answer(
             result.checks.append(
                 ClaimCheck(display, "direction", False,
                            evidence=_snippet(trusted, (suffix, ""), "partial_date"),
+                           from_question=cls in q_partial_quals.get(suffix, set()),
                            from_case=cls in facts_partial_quals.get(suffix, set()))
             )
 
@@ -683,7 +757,8 @@ def verify_answer(
                 continue
             seen_role.add(display)
             result.checks.append(
-                ClaimCheck(display, "role", False, evidence=", ".join(sorted(labels)))
+                ClaimCheck(display, "role", False, evidence=", ".join(sorted(labels)),
+                           from_question=d in q_roles.get(role, set()))
             )
         # 부분 날짜 표기의 역할 대조(v8) — 라벨(완전한 ISO)을 월-일 접미로
         # 투영해 비교한다. 존재 축을 접미로 통과한 표기가 역할 축(ISO 전용
@@ -699,7 +774,8 @@ def verify_answer(
                 continue
             seen_role.add(display)
             result.checks.append(
-                ClaimCheck(display, "role", False, evidence=", ".join(sorted(labels)))
+                ClaimCheck(display, "role", False, evidence=", ".join(sorted(labels)),
+                           from_question=suffix in q_roles_partial.get(role, set()))
             )
 
     if citations and not allow_superseded:
@@ -732,12 +808,23 @@ def warning_text(v: VerificationResult) -> str:
             "답변이 이를 정정하는 맥락인지 포함해 질문의 전제 자체를 규정 원문과 대조하세요."
         )
     for c in (x for x in v.checks if x.kind == "direction"):
-        note = (
-            " 케이스 서술에는 같은 방향 표현이 있어 재서술일 수 있으나, 규정"
-            " 근거와는 방향이 반대입니다 — 어느 쪽인지 확인이 필요합니다."
-            if c.from_case
-            else " 기한·범위의 방향이 뒤집히면 수치가 맞아도 컴플라이언스 오류입니다."
-        )
+        # 문구 우선순위(v9): 전제 에코 > 케이스 에코 > 무조건 경고 — 존재 축의
+        # '환각 vs 전제 확인' 구분과 같은 원리다. 질문의 틀린 전제를 정정하는
+        # 답변("15일 이후가 아니라 이내")은 전제를 재서술할 수밖에 없는데,
+        # 완화 없는 '컴플라이언스 오류' 단정이 붙으면 옳은 정정마다 오탐이다
+        # (경고 자체는 유지 — 끄는 것이 아니라 종류를 조정한다).
+        if c.from_question:
+            note = (
+                " 이 방향 표현은 질문의 전제에 있던 것입니다 — 답변이 그 전제를"
+                " 정정·재서술하는 맥락인지 확인하세요(근거 자체는 반대 방향입니다)."
+            )
+        elif c.from_case:
+            note = (
+                " 케이스 서술에는 같은 방향 표현이 있어 재서술일 수 있으나, 규정"
+                " 근거와는 방향이 반대입니다 — 어느 쪽인지 확인이 필요합니다."
+            )
+        else:
+            note = " 기한·범위의 방향이 뒤집히면 수치가 맞아도 컴플라이언스 오류입니다."
         parts.append(
             f"⚠ 방향 한정어 경고: 답변의 '{c.claim}' 은(는) 근거와 방향이 반대입니다"
             + (f" (근거: \"…{c.evidence}…\")" if c.evidence else "")
@@ -745,10 +832,15 @@ def warning_text(v: VerificationResult) -> str:
         )
     for c in (x for x in v.checks if x.kind == "role"):
         role, date = c.claim.split(" ", 1)
+        premise = (
+            " 이 역할-날짜 조합은 질문의 전제에 있던 것입니다 — 답변이 전제를"
+            " 정정하는 맥락인지 확인하세요."
+            if c.from_question else ""
+        )
         parts.append(
             f"⚠ 날짜 역할 경고: 답변이 '{role}'(으)로 제시한 {date} 은(는) 근거에 존재하지만, "
             f"도구가 해당 역할로 계산한 날짜({c.evidence})와 다릅니다. "
-            "날짜들의 역할(인지일↔마감일)이 서로 뒤바뀌지 않았는지 대조하세요."
+            "날짜들의 역할(인지일↔마감일)이 서로 뒤바뀌지 않았는지 대조하세요." + premise
         )
     if v.superseded_cited:
         parts.append(

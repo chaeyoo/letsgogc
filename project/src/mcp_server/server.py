@@ -21,7 +21,6 @@ FDE의 실력은 여기서 드러난다 — 에이전트가 언제 어떤 도구
 from __future__ import annotations
 
 import datetime as _dt
-import json
 
 from fastmcp import FastMCP
 
@@ -39,10 +38,6 @@ def _get_pipeline() -> RagPipeline:
     if _pipeline is None:
         _pipeline = RagPipeline().build()
     return _pipeline
-
-
-def _load_ra_tasks() -> dict:
-    return json.loads(config.RA_TASKS_FILE.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -74,11 +69,21 @@ def search_regulations(
 
     Returns:
         {"results": [{"text","title","source","section","version","effective_date","score"}...]} 형태.
-        as_of 가 YYYY-MM-DD 형식이 아니면 {"error", "expected"} — 형식 오류를
-        조용히 무시하고 현행 기준으로 답하면 사용자는 '그 시점 규정'을 받았다고
-        믿게 된다(자신 있는 오답). 명시적 에러라야 에이전트가 정정 재시도한다.
+        as_of 가 YYYY-MM-DD 형식이 아니거나 query 가 비어 있으면
+        {"error", "expected"} — 형식 오류를 조용히 무시하고 현행 기준으로
+        답하면 사용자는 '그 시점 규정'을 받았다고 믿게 된다(자신 있는 오답).
+        명시적 에러라야 에이전트가 정정 재시도한다.
     """
     from ..pv.redactor import redact
+
+    if not query.strip():
+        # 빈 질의는 무신호라 리트리버가 빈 결과를 반환한다(v9 계약) — 그것을
+        # 그대로 흘리면 "results": [] 가 '관련 규정 없음'이라는 자신 있는
+        # 오답으로 소비된다(조용한 빈 결과 금지). as_of 형식 오류와 동일한
+        # 명시적 에러 계약으로 답해 에이전트가 질의를 채워 재시도하게 한다.
+        # 에러 문구에 예시 질의를 넣지 않는 것도 as_of 의 예시 날짜 금지와
+        # 같은 규율(예시가 실제 검색 클레임처럼 소비되는 것 차단)이다.
+        return {"error": "query 가 비어 있음", "expected": "비어 있지 않은 검색어"}
 
     # 심층방어: query 도 자유 텍스트 인자다. 에이전트 경유 시에는 이미 마스킹된
     # 메시지에서 파생되지만, stdio 단독 사용(Claude Desktop 등)에서는 외부에서
@@ -142,31 +147,15 @@ def get_ra_deadlines(within_days: int = 30, task_type: str = "") -> dict:
         구분되는 명시적 에러다.
     """
     from ..pv.redactor import redact
+    from ..ra.tasks import deadlines_within
 
     # 필터 인자도 자유 텍스트다 — 미매칭 시 에러 문구에 그대로 에코되므로,
     # 개인정보가 들어오면 에코 경로로 노출된다(마스킹해도 매칭 의미는 불변:
     # 유효한 유형명에는 PII 패턴이 없다).
     task_type = redact(task_type).text if task_type else task_type
-    data = _load_ra_tasks()
-    # 존재하지 않는 유형은 빈 목록이 아니라 에러로 답한다 — 오타 난 필터에
-    # "임박한 마감이 없습니다"라고 답하는 것은 '자신 있는 오답'이다(조용한 빈
-    # 결과 금지). available 을 함께 주므로 LLM 에이전트가 스스로 정정 재시도한다
-    # (get_submission_checklist 와 동일한 에러 계약).
-    known_types = sorted({d["type"] for d in data["deadlines"]})
-    if task_type and task_type not in known_types:
-        return {"error": f"'{task_type}' 유형의 업무가 없음", "available": known_types}
-    today = _dt.date.today()
-    out = []
-    for d in data["deadlines"]:
-        due = _dt.date.fromisoformat(d["due_date"])
-        d_day = (due - today).days
-        if d_day > within_days:
-            continue
-        if task_type and d["type"] != task_type:
-            continue
-        out.append({**d, "d_day": d_day})
-    out.sort(key=lambda x: x["due_date"])
-    return {"today": today.isoformat(), "count": len(out), "deadlines": out}
+    # 조회 로직은 src/ra/tasks.py 의 순수 함수에 위임한다 — PV 도구가 src/pv/
+    # 에 위임하는 것과 대칭인 RA 갈래. 이 계층은 인자 마스킹과 MCP 노출만 담당.
+    return deadlines_within(within_days=within_days, task_type=task_type)
 
 
 @mcp.tool
@@ -182,13 +171,10 @@ def get_submission_checklist(category: str) -> dict:
         {"category", "items": [...]} 또는 미지원 시 {"error", "available": [...]}.
     """
     from ..pv.redactor import redact
+    from ..ra.tasks import submission_checklist
 
     category = redact(category).text if category else category  # 에러 에코 경로 방어(위와 동일)
-    data = _load_ra_tasks()
-    checklists = data["checklists"]
-    if category not in checklists:
-        return {"error": f"'{category or '(미지정)'}' 체크리스트 없음", "available": list(checklists)}
-    return {"category": category, "items": checklists[category]}
+    return submission_checklist(category)  # 조회 로직은 src/ra/ 위임(위와 동일한 대칭)
 
 
 @mcp.tool

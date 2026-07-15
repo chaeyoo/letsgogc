@@ -609,3 +609,96 @@ def test_direction_word_buteo_detected():
     """'부터'(하한 기산점) 뒤집기 — "2026-07-25부터" vs 근거 "…까지". (v8)"""
     r = verify_answer("2026-07-25부터 제출 가능합니다", ["제출 기한은 2026-07-25까지"])
     assert not r.ok and len(r.direction_conflicts) == 1
+
+
+# ---------------------------------------------------------------------------
+# v9 — 단위 표기 변형('주'+어미 직결, '달', '퍼센트')의 수집
+# ---------------------------------------------------------------------------
+def test_week_unit_collected_with_hangul_suffix():
+    """'주' lookahead 의 전면 한글 배제가 "2주간"·"2주입니다"·"2주로" 표기의
+    수집을 통째로 차단했다(v9) — 그 표기로만 오는 "15일 → 약 2주간" 환산
+    위조는 조용히 통과하고(미탐), 근거가 "2주간"이면 옳은 답변 "2주"에
+    미확인 오탐이 붙는 양방향 결함. \b 가 한글 직결에서 경계가 아니던 v6
+    교훈이 검증기 자신의 단위 표기에는 미전파된 형태였다."""
+    r = verify_answer("보관 기간은 약 2주간입니다", ["보관 기간은 15일이다"])
+    assert not r.ok and "2주" in r.unsupported
+    # 역방향(오탐 감시): 근거 쪽 표기가 "2주간"이어도 답변 "2주"는 지지된다
+    r = verify_answer("안정성 시험은 2주 이내에 완료합니다",
+                      ["안정성 시험은 2주간 이내에 완료한다"])
+    assert r.ok, r.summary()
+
+
+def test_week_compound_words_not_collected_as_unit():
+    """'주년·주기·주차' 등 비단위 합성어는 여전히 수집하지 않는다 — lookahead
+    를 좁힌 대가로 관용 합성어가 기간 클레임이 되면 오탐 경로가 열린다."""
+    nums, _ = extract_claims("창립 10주년 행사와 사업 2주기 평가, 3주차 교육")
+    assert not any(u == "주" for _, u in nums)
+
+
+def test_native_month_unit_dal_normalized():
+    """'6달'은 '6개월'의 표기 변형(환산 아님) — 종전에는 아예 수집되지 않아
+    "60일 → 6달" 위조가 조용히 통과했다. '달러'는 단위가 아니다."""
+    r = verify_answer("갱신 신청은 6달 이내에 해야 합니다", ["갱신 신청은 60일 이내에 한다"])
+    assert not r.ok and "6개월" in r.unsupported
+    r = verify_answer("갱신 주기는 6달입니다", ["갱신 주기는 6개월이다"])
+    assert r.ok, r.summary()
+    nums, _ = extract_claims("수수료는 100달러입니다")
+    assert not any(u == "개월" for _, u in nums)
+
+
+def test_percent_spelled_out_normalized():
+    """'90 퍼센트'는 '90%'의 표기 변형 — 철자 표기만 미수집이면 그 표기로 오는
+    수치 위조가 축을 우회한다."""
+    r = verify_answer("적합률은 90 퍼센트입니다", ["적합률은 90%이다"])
+    assert r.ok, r.summary()
+    r = verify_answer("적합률은 95 퍼센트입니다", ["적합률은 90%이다"])
+    assert not r.ok and "95%" in r.unsupported
+
+
+# ---------------------------------------------------------------------------
+# v9 — 방향·역할 축의 전제(from_question) 라벨: 정정 답변의 오탐 종류 조정
+# ---------------------------------------------------------------------------
+def test_direction_conflict_from_question_labeled():
+    """질문의 틀린 방향 전제를 정정하는 답변("이후가 아니라 이내")은 전제를
+    재서술할 수밖에 없다 — 경고는 유지하되(정정인지 왜곡인지 기계는 모른다)
+    from_question 라벨과 '전제 확인' 문구로 종류가 조정되어야 한다. 완화
+    라벨이 존재 축에만 배선되어 옳은 정정에 '컴플라이언스 오류' 단정이 붙던
+    축 × 라벨 매트릭스의 빈 칸(v9)."""
+    r = verify_answer(
+        "아니요, 15일 이후가 아니라 인지일로부터 15일 이내에 보고해야 합니다",
+        ["인지일로부터 15일 이내 신속보고"],
+        question="신속보고는 15일 이후에 하면 되나요?",
+    )
+    check = next(c for c in r.checks if c.kind == "direction")
+    assert not r.ok and check.from_question       # 경고 유지 + 라벨
+    assert "15일 이후" in r.question_origin        # 계기판 축에도 반영
+    assert "전제" in warning_text(r)               # 문구 조정
+    # 질문에 그 방향이 없으면 종전대로 무조건 경고 문구
+    r2 = verify_answer("15일 이후에 보고하면 됩니다", ["인지일로부터 15일 이내 신속보고"])
+    check2 = next(c for c in r2.checks if c.kind == "direction")
+    assert not check2.from_question and "컴플라이언스 오류" in warning_text(r2)
+
+
+def test_role_conflict_from_question_labeled():
+    """역할 축의 전제 라벨 — 질문이 "기한이 <인지일> 맞나요?"라고 물었을 때
+    그 역할-날짜 조합을 재서술하며 정정하는 답변에는 from_question 이 붙는다."""
+    r = verify_answer(
+        "기한은 2026-07-10 이 아니라 2026-07-25 입니다",
+        ['{"awareness_date": "2026-07-10", "deadline_date": "2026-07-25"}'],
+        question="보고 기한이 2026-07-10 맞나요?",
+    )
+    check = next(c for c in r.checks if c.kind == "role")
+    assert check.from_question and "전제" in warning_text(r)
+
+
+def test_direction_from_case_included_in_case_origin():
+    """방향 충돌의 from_case 라벨이 case_origin(summary·계기판 case_labeled·감사
+    로그의 재료)에 포함된다 — 종전에는 supported=True 를 요구해 방향축 라벨이
+    어디에도 집계되지 않았다(라벨은 죽어도 소리가 없다는 원칙의 빈틈, v9)."""
+    r = verify_answer(
+        "15일 이후에 보고하면 됩니다",
+        ["인지일로부터 15일 이내 신속보고"],
+        user_fact_texts=["환자가 복용 15일 이후 증상 발생"],
+    )
+    assert "15일 이후" in r.case_origin
+    assert "15일 이후" in r.summary()["case_origin"]

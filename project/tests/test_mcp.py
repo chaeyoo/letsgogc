@@ -39,6 +39,17 @@ def test_search_bad_as_of_is_explicit_error():
     assert "results" not in bad
 
 
+def test_search_empty_query_is_explicit_error():
+    """빈 질의는 무신호라 리트리버가 빈 결과를 반환하는데, 그것을 그대로
+    흘리면 "results": [] 가 '관련 규정 없음'이라는 자신 있는 오답으로
+    소비된다 — as_of 형식 오류와 동일한 {"error","expected"} 계약으로 답한다
+    (조용한 빈 결과 금지). 에러 문구에 예시 질의를 넣지 않는 규율도 동일."""
+    for q in ["", "   "]:
+        bad = search_regulations(q)
+        assert "error" in bad and "expected" in bad
+        assert "results" not in bad
+
+
 def test_get_ra_deadlines_contract():
     out = get_ra_deadlines(within_days=365)
     assert "today" in out and "deadlines" in out

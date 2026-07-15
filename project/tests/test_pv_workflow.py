@@ -347,3 +347,132 @@ def test_coding_jaundice_is_independent_pt():
     assert [(t.pt, t.pt_en) for t in coded] == [("황달", "Jaundice")]
     coded2 = code_terms("복용 후 간독성 소견")
     assert [(t.pt, t.pt_en) for t in coded2] == [("간손상", "Liver injury")]
+
+
+# ---------------------------------------------------------------------------
+# v9 — 인과성 극성 판정(부정 어미 일반 규칙)·rationale 모순·보고요건 오탐 봉합
+# ---------------------------------------------------------------------------
+def test_causality_negated_improvement_is_not_positive_dechallenge():
+    """"중단했지만 호전되지 않았다"는 positive dechallenge 가 아니다. (v9)
+
+    "호전되지 않"이 부정 목록에 없어 IMPROVE 의 "호전"이 먼저 매칭됐다 —
+    부정 활용은 열린 집합이라 열거 확장 대신 '긍정 어휘 매칭 직후 N자 이내
+    부정 어미(않·없·아니)' 일반 규칙으로 판정하고, 부정은 판단 불가가 아니라
+    반증(not_improved)으로 매핑한다."""
+    for case in [
+        "복용 후 발진이 생겼고 중단했지만 발진이 호전되지 않았다",
+        "복용 후 발진, 중단했으나 회복되지 않았다",
+        "복용 후 발진, 중단 후에도 사라지지 않았다",
+        "복용 후 발진, 중단해도 좋아지지 않았다",
+    ]:
+        c = assess_causality(case)
+        assert not c.signals["중단 후 호전(dechallenge)"], case
+        assert c.suggested == POSSIBLE, case
+
+
+def test_causality_compact_no_recurrence_blocks_certain():
+    """"재투여 후 재발 없음"(조사 생략형)이 rechallenge 양성으로 뒤집히지 않는다. (v9)
+
+    "재발 없"이 부정 목록에 없어 RECUR "재발"이 매칭 — 대체원인 명시 배제까지
+    결합되면 반증 케이스가 최고 등급(Certain)을 지지하는 치명 오류였다.
+    반증 신호는 Possible 상한으로 눌러야 한다."""
+    c = assess_causality("복용 후 발진. 중단하니 호전. 재투여 후 재발 없음. 병용약물은 없었다")
+    assert not c.signals["재투여 후 재발(rechallenge)"]
+    assert c.suggested == POSSIBLE
+    assert "재발하지 않아" in c.rationale
+
+
+def test_causality_negated_dechallenge_marker_opens_no_window():
+    """"약을 중단하지 않았는데도 호전"에서 dechallenge 창이 열리면 안 된다. (v9)
+
+    맥락 마커("중단") 자체가 부정된 서술은 그 경과가 일어난 적이 없다 —
+    부정된 마커로 창이 열리면 뒤따르는 "호전"이 존재하지 않는 중단 경과의
+    양성 신호로 둔갑한다."""
+    for case in [
+        "복용 후 두통이 생겼고, 약을 중단하지 않았는데도 증상이 호전되었다",
+        "복용 후 두통. 중단 없이 유지했는데 증상이 호전되었다",
+    ]:
+        c = assess_causality(case)
+        assert not c.signals["중단 후 호전(dechallenge)"], case
+        assert c.suggested == POSSIBLE, case
+        # 중단 경과는 '미확인'이므로 되물을 질문에 남는다
+        assert any("dechallenge" in q for q in c.missing_info), case
+
+
+def test_causality_dechallenge_without_temporal_has_consistent_rationale():
+    """중단 경과는 양성인데 시간 마커가 없을 때 rationale 이 신호와 모순되지 않는다. (v9)
+
+    이전에는 Unassessable 로 떨어지며 "판단 요소가 감지되지 않는다"는 사유가
+    붙었다 — 감지된 신호(중단 후 호전)와 정면 모순. WHO-UMC 근사의 보수
+    원칙대로 Possible 에 머물되, 시간관계 확인을 질문으로 넘긴다."""
+    c = assess_causality("발진이 있어 약을 중단하니 호전되었다")
+    assert c.signals["중단 후 호전(dechallenge)"]
+    assert c.suggested == POSSIBLE
+    assert "감지되지 않는다" not in c.rationale
+    assert "시간관계" in c.rationale and "확인" in c.rationale
+    assert any("시간적 선후관계" in q for q in c.missing_info)
+
+
+def test_report_intent_compound_is_not_reporter():
+    """"의사소통"·"의사결정"·"약사법"의 '의사/약사'는 보고자가 아니다. (v9)
+
+    substring 매칭은 intent(의사소통)·법령명(약사법)을 ②요건 충족으로 밀어,
+    보고자 없는 케이스가 보완 요청 없이 조용히 통과했다 — 이 모듈의 실패
+    방향은 '시끄러운 보완 요청'이어야 한다(v8 병원 마커와 같은 원칙)."""
+    r = build_report("45세 남성 환자가 A정을 복용 후 발진 발생. 향후 치료는 가족과의 의사소통을 통해 결정")
+    assert any("보고자" in m for m in r.missing)
+    r2 = build_report("45세 여성 환자가 B정을 복용 후 두통. 약사법에 따른 절차로 의사결정이 필요")
+    assert any("보고자" in m for m in r2.missing)
+    # 진짜 직역("의사가 보고")은 여전히 인정된다(오탐 차단이 미탐을 만들면 안 된다)
+    r3 = build_report("45세 남성 환자가 A정을 복용 후 발진 발생. 담당 의사가 보고했습니다")
+    assert not any("보고자" in m for m in r3.missing)
+
+
+def test_report_generation_notation_is_not_patient_age():
+    """"3세대 세팔로스포린"의 "3세"는 환자 나이가 아니다. (v9)
+
+    나이 정규식(\\d{1,3}세)이 세대(generation) 표기에 부분 매칭해, 환자 정보
+    없는 케이스의 ①요건이 조용히 충족됐다 — '세' 뒤 '대'를 후방 경계로 배제."""
+    r = build_report("3세대 세팔로스포린 항생제 투여 후 발진 발생. 의사가 보고했습니다")
+    assert any("환자" in m for m in r.missing)
+    # 진짜 나이 표기는 여전히 ①신호다
+    r2 = build_report("3세 남아가 시럽 복용 후 발진 발생. 의사가 보고했습니다")
+    assert not any("환자" in m for m in r2.missing)
+
+
+def test_report_quantity_token_is_not_suspected_drug():
+    """"아스피린 1정을 복용"의 "1정"(수량)만으로 ③요건이 충족되면 안 된다. (v9)
+
+    수량 토큰은 제품명이 아니다 — 제품명·성분 없는 케이스는 미충족(시끄러운
+    보완 요청)이 올바른 판정이라, 숫자로만 시작하는 토큰은 배제한다."""
+    r = build_report("환자가 아스피린 1정을 복용 후 두통 발생. 의사가 보고했습니다")
+    assert any("의심 의약품" in m for m in r.missing)
+    # 제품명 패턴("타이레놀정을 복용")은 여전히 감지된다
+    r2 = build_report("환자가 타이레놀정을 복용 후 두통 발생. 의사가 보고했습니다")
+    assert not any("의심 의약품" in m for m in r2.missing)
+
+
+def test_report_reporter_name_token_is_not_patient_signal():
+    """보고자 직역 바로 뒤의 [이름]은 환자 요건 ①의 신호가 아니다. (v9)
+
+    마스킹 토큰 [이름]은 역할을 구분하지 않아, "담당 약사 [이름]님"의 보고자
+    성명이 환자 존재 신호로 전용됐다 — 직역+공백 0~1자 뒤에 직결된 [이름]만
+    좁게 제외해 독립 [이름](PV-009)의 ①신호는 유지한다(보수적 구현)."""
+    r = build_report("담당 약사 [이름]님이 발진 사례를 보고했습니다")
+    assert any("환자" in m for m in r.missing)          # ① 미충족(보완 요청)
+    assert not any("보고자" in m for m in r.missing)    # ② 는 직역으로 충족
+    # 직역에 붙지 않은 독립 [이름]은 여전히 환자 신호다(PV-009 라벨과 동일 방향)
+    r2 = build_report("[이름]님이 B정 복용 후 발진이 생겼다고 간호사가 보고했습니다")
+    assert not any("환자" in m for m in r2.missing)
+
+
+def test_coding_visceral_cramp_is_not_seizure():
+    """"위경련"·"근육경련"의 '경련'은 Seizure(신경계 발작)로 확정되지 않는다. (v9)
+
+    1계층은 자동 확정 계층이라 부분 매칭 오매핑이 곧 시그널 집계의 구조적
+    오염이다(황달≠간손상과 같은 원칙) — 전방 합성어(위·근육)를 배제한다."""
+    assert code_terms("복용 후 위경련이 있었다") == []
+    assert code_terms("복용 후 근육경련 증상을 보였다") == []
+    # 진짜 신경계 경련·발작은 여전히 확정된다(배제가 미탐을 만들면 안 된다)
+    coded = code_terms("복용 후 전신 경련과 발작이 발생했다")
+    assert [(t.pt, t.pt_en) for t in coded] == [("경련", "Seizure")]
