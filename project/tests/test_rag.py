@@ -119,3 +119,14 @@ def test_sweep_propagates_accept_doc_ids(pipeline, monkeypatch):
     monkeypatch.setattr(sweep, "_load_qa", lambda: [item])
     out = sweep.run_config(pipeline, rerank_n=1)
     assert out["Hit@1"] == 1.0
+
+
+def test_tokenize_nfkc_folds_compatibility_chars():
+    """tokenize 가 NFKC 로 호환·전각 문자를 접어 색인 가능하게 만든다(v12).
+
+    실 규제문서에 흔한 ㎎·전각 영숫자가 종전에는 [A-Za-z0-9]·[가-힣] 어디에도
+    안 걸려 통째로 탈락(검색 불가)했다. 코퍼스·질의가 같은 tokenize 를 지나므로
+    양측 대칭 정규화된다."""
+    from src.rag.textutil import tokenize
+    assert "500mg" in tokenize("500㎎ 이하")        # ㎎→mg 접혀 토큰화
+    assert "gmp" in tokenize("ＧＭＰ 실태조사")       # 전각→반각

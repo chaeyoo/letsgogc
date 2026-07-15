@@ -92,7 +92,7 @@ flowchart TB
 | **배포 전 점검(FDE Day-0)** | 설정·코퍼스·업무데이터·스모크+안전장치 자가 테스트 — 실패 시 기동 차단 | `src/preflight.py` |
 | **운영 계기판** | 검증 경고율(`warn_rate_checked`)·감사 로그를 `/health` 노출 | `src/observability.py` |
 | **실데이터 인제스트** | PDF→코퍼스 변환 경로(헤딩 휴리스틱+frontmatter, 상용 파서 교체 자리) | `scripts/ingest_pdf.py` |
-| **테스트/CI** | pytest 286케이스(불변식/fuzz 포함) + Actions(preflight+평가 4종 회귀) | `tests/`, 루트 `.github/workflows/ci.yml` |
+| **테스트/CI** | pytest 291케이스(불변식/fuzz 포함) + Actions(preflight+평가 4종 회귀) | `tests/`, 루트 `.github/workflows/ci.yml` |
 
 ## 5. 실행 방법
 
@@ -102,7 +102,7 @@ cd project
 export ANTHROPIC_API_KEY=sk-ant-...   # (선택) LLM 모드 — 없어도 오프라인 grounded 답변으로 항상 동작
 ```
 
-품질 확인: `.venv/bin/python -m src.preflight`(배포 전 점검) · `-m pytest`(286케이스) ·
+품질 확인: `.venv/bin/python -m src.preflight`(배포 전 점검) · `-m pytest`(291케이스) ·
 `-m eval.evaluate / sweep / faithfulness / pv_eval / verify_eval`(평가 5종, 95% CI 병기).
 CI는 매 푸시마다 preflight+테스트+평가 4종을 실행한다. MCP 단독 실행·Claude Desktop 연결은
 [사용자 가이드](description/가이드.md) 참고.
