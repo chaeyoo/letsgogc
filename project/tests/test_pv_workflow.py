@@ -15,8 +15,9 @@ from src.pv.causality import (
     UNLIKELY,
     assess_causality,
 )
-from src.pv.coding import code_terms
+from src.pv.coding import code_terms, suggest_candidates
 from src.pv.report import build_report
+from src.pv.triage import assess_case
 
 
 # ---------------------------------------------------------------------------
@@ -512,3 +513,70 @@ def test_coding_visceral_cramp_is_not_seizure():
     # 진짜 신경계 경련·발작은 여전히 확정된다(배제가 미탐을 만들면 안 된다)
     coded = code_terms("복용 후 전신 경련과 발작이 발생했다")
     assert [(t.pt, t.pt_en) for t in coded] == [("경련", "Seizure")]
+
+
+# ---------------------------------------------------------------------------
+# v11 회귀 — v10 봉합의 반대편/열거 재확산 봉합
+# ---------------------------------------------------------------------------
+def test_triage_death_markers_recall_first():
+    """사망은 미탐이 치명적 — 최빈 사망 표현(돌연사·급사·별세·운명·숨을 거두다)도
+    중대로 잡는다(v11). 좁은 닫힌 목록이 원외 사망을 정기보고로 흘리던 갭."""
+    for txt in ["환자가 숨을 거두었다", "돌연사하였다", "급사함", "별세하였다", "운명하셨다"]:
+        r = assess_case(txt, "")
+        assert r.is_serious and "사망" in r.criteria_met, txt
+    # 기존 표현 회귀 없음
+    assert assess_case("사망하였다", "").is_serious
+
+
+def test_report_child_marker_not_fired_by_remain_verb():
+    """소아 명사 '남아'(男兒)가 동사 '남아 있다'(잔존)에 오발화하지 않는다(v11).
+
+    "증상이 남아 있음"은 환자 식별정보가 아니다 — 이것이 ①요건을 조용히
+    충족시켜 환자정보 없는 케이스가 reportable=True 로 통과하던 갭."""
+    r = build_report("타이레놀정 복용 후 두드러기가 생겼고 통증이 남아 있음. 담당 의사가 보고함.")
+    assert not r.reportable
+    assert any(m.startswith("①") for m in r.missing)
+    # 명사 용법은 여전히 환자 신호로 인정(과교정 방지)
+    r2 = build_report("남아가 B정 복용 후 발진 발생. 어머니가 보고함.")
+    assert not any(m.startswith("①") for m in r2.missing)
+
+
+def test_coding_paroxysm_attack_is_candidate_not_confirmed():
+    """다의어 '발작'은 1계층 자동확정에서 빠져, 질환명+발작(공황·협심증·천식)이
+    경련(Seizure)으로 오확정되지 않는다 — 후보(2계층)로 사람이 확정(v11)."""
+    for txt in ["공황발작이 있었다", "협심증 발작", "천식 발작"]:
+        coded = code_terms(txt)
+        assert "경련" not in {t.pt for t in coded}, txt
+        cands = suggest_candidates(txt, coded)
+        assert "경련" in {c.pt for c in cands}, txt   # 후보로는 제시(검수 큐 도달)
+    # 정당한 경련은 여전히 확정
+    assert "경련" in {t.pt for t in code_terms("전신 경련이 있었다")}
+    assert "경련" not in {t.pt for t in code_terms("위경련이 있었다")}  # v9 봉합 유지
+
+
+def test_report_hanuisa_hanyaksa_are_reporters():
+    """한의사·한약사는 KAERS 유효 보고자 — F1(v10) 룩비하인드가 한글 직결이라
+    놓치던 정당 보고자를 마커로 인정(v11, 경계 봉합의 반대편 미탐 봉합)."""
+    for txt in ["한의사가 처방한 약 복용 후 환자에게 두드러기 발생했다고 보고",
+                "한약사가 조제한 약 복용 후 45세 남성 환자가 어지럼증 신고"]:
+        assert not any("보고자" in m for m in build_report(txt).missing), txt
+
+
+def test_triage_unexpected_nominal_form_not_flipped():
+    """'알려진 부작용이 아님'(명사형)이 expected 로 뒤집히지 않는다(v11) —
+    v9 가 아니/아닌만 열거하고 종결 명사형 '아님'을 빠뜨린 갭."""
+    assert assess_case("이 반응은 알려진 부작용이 아님", "").expectedness == "unexpected"
+    assert assess_case("알려진 부작용이 아니다", "").expectedness == "unexpected"
+
+
+def test_causality_boundary_is_clause_terminators_only():
+    """절 경계는 절 종결자(쉼표·마침표…)만 — 어절 내부 표기(가운뎃점·말줄임표·
+    줄바꿈)를 경계로 보면 v9 마커가드를 되뚫고 정당 부정을 놓쳐 인과성을
+    과대평가한다(v11, 경계 봉합의 반대편 미탐)."""
+    # v10 fix(쉼표 절 경계) 유지 — 양방향 회귀 방지
+    assert assess_causality("중단하니 회복, 이상없음.").signals["중단 후 호전(dechallenge)"]
+    # 어절 내부 줄바꿈/말줄임표/가운뎃점에서 부정을 놓치지 않는다
+    assert not assess_causality("중단 후 호전\n되지 않음.").signals["중단 후 호전(dechallenge)"]
+    assert not assess_causality("호전·회복되지 않음").signals["중단 후 호전(dechallenge)"]
+    # v9 '부정된 마커 건너뛰기' 가드가 줄바꿈에도 성립(마커가 부정되면 창 안 열림)
+    assert not assess_causality("중단하지\n않았는데도 호전됨.").signals["중단 후 호전(dechallenge)"]

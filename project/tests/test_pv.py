@@ -357,3 +357,24 @@ def test_redact_masks_dotted_rrn():
     r = redact("주민번호는 900101.1234567 입니다")
     assert "900101.1234567" not in r.text
     assert r.counts.get("주민등록번호") == 1
+
+
+def test_redact_phone_with_spaced_separators():
+    """전화번호 구분자 양옆 공백("010 - 1234 - 5678")도 마스킹한다(v11) —
+    주민번호는 공백 패딩을 받는데 전화만 못 받던 같은 파일 안 구분자 비대칭
+    (비대칭은 곧 우회로 = 유출)."""
+    for txt in ["010 - 1234 - 5678", "010- 1234- 5678", "010 . 1234 . 5678"]:
+        r = redact(txt)
+        assert "[전화번호]" in r.text and "5678" not in r.text, txt
+    # 기존 표기 회귀 없음
+    assert redact("010-1234-5678").text == "[전화번호]"
+
+
+def test_redact_fullwidth_digits_via_nfkc():
+    """전각 숫자 주민번호·전화("０１０－…")도 마스킹한다(v11) — `\\d`는 전각을
+    받지만 성별코드 [1-8]·앞자리 01[016789] 같은 ASCII 앵커는 못 받아 통째로
+    유출되던 표기 축을, 진입부 NFKC 정규화로 클래스 차원에서 봉합."""
+    r1 = redact("주민번호 ９００１０１－１２３４５６７")
+    assert "[주민번호]" in r1.text and "1234567" not in r1.text
+    r2 = redact("연락처 ０１０－１２３４－５６７８")
+    assert "[전화번호]" in r2.text

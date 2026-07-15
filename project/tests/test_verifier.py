@@ -746,15 +746,24 @@ def test_ok_derived_from_blocking_axes_subset_of_warning_axes():
     등록을 빠뜨리면 warn_rate 만 오르고 by_axis 귀속 없는 축이 배포되는 결합을
     구조로 막는다(7-7 패턴3 정본 앵커가 봉합하지 않은 마지막 결합, v10)."""
     assert set(BLOCKING_AXES) <= set(WARNING_AXES)
-    # 각 차단 축이 실제로 ok 를 False 로 만든다(파생의 정합)
-    for axis, kind in [
-        ("unsupported", "numeric"), ("direction_conflicts", "direction"),
-        ("role_conflicts", "role"),
-    ]:
-        v = VerificationResult(checks=[
-            ClaimCheck(claim="x", kind=kind, supported=False)
-        ])
+    # 각 차단 축이 단독으로 ok 를 False 로 만든다(파생의 정합) — superseded_cited
+    # 까지 4축 전부(v11: 종전 메타테스트는 3축만 돌아 4번째 차단 축의 파생이
+    # 강제되지 않았다).
+    axis_cases = {
+        "unsupported": VerificationResult(checks=[ClaimCheck(claim="x", kind="numeric", supported=False)]),
+        "direction_conflicts": VerificationResult(checks=[ClaimCheck(claim="x", kind="direction", supported=False)]),
+        "role_conflicts": VerificationResult(checks=[ClaimCheck(claim="x", kind="role", supported=False)]),
+        "superseded_cited": VerificationResult(superseded_cited=["REG-013"]),
+    }
+    assert set(axis_cases) == set(BLOCKING_AXES)          # 4축 전수 — 누락 시 실패
+    for axis, v in axis_cases.items():
         assert not v.ok and getattr(v, axis)
+    # ok 가 정확히 `not any(BLOCKING)` 임을 고정 — 빈 result 는 다른 프로퍼티 값과
+    # 무관하게 ok=True, 각 차단 축 단독은 ok=False(배타성). 손코딩으로 BLOCKING
+    # 밖 조건을 ok 에 끼워넣는 우회를 잡는다.
+    assert VerificationResult().ok is True
+    for v in axis_cases.values():
+        assert v.ok == (not any(getattr(v, a) for a in BLOCKING_AXES))
     # 비차단 경고 축(question_origin)만으로는 ok 를 깨지 않는다 — 전제 라벨은
     # 경고 '문구'만 바꾸는 축이라 WARNING_AXES 이되 BLOCKING_AXES 는 아니다
     assert "question_origin" in WARNING_AXES
