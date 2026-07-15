@@ -1,0 +1,27 @@
+# Render Blueprint — RAPV-Assistant 를 오프라인 모드로 무료 배포
+#
+# 사용법: Render 대시보드 → New + → Blueprint → 이 GitHub 리포 연결 →
+#         render.yaml 이 자동 인식되어 서비스가 생성된다. (아래 DEPLOY.md 참고)
+#
+# 이 앱은 '오래 사는 서버'(부팅 시 1회 RAG 인덱싱 + 인메모리 계기판)라
+# 서버리스(Vercel)보다 컨테이너/영속 프로세스 호스트(Render·Railway·Fly)가 맞다.
+services:
+  - type: web
+    name: rapv-assistant
+    runtime: python
+    rootDir: project            # 앱 루트는 레포 하위 project/
+    plan: free                  # 무료 티어(유휴 시 슬립 → 첫 접속 콜드스타트 ~30초)
+    buildCommand: pip install -r requirements.txt
+    # 기동 전 점검(preflight) 통과 후에만 uvicorn 시작(run.sh 와 동일한 fail-closed 게이트).
+    # $PORT 는 Render 가 주입한다.
+    startCommand: python -m src.preflight && uvicorn src.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true            # main 에 푸시하면 자동 재배포
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.15"
+      # LLM 모드(면접 라이브 시연 등)가 필요하면 Render 대시보드 → Environment 에서
+      # 아래를 직접 추가한다. 값은 절대 커밋하지 말 것. 공개 URL 에 키를 넣으면
+      # 방문자가 API 비용을 태우므로, 통제된 시연에만 임시로 켜는 것을 권장한다.
+      # - key: ANTHROPIC_API_KEY
+      #   sync: false
