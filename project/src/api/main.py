@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field
 
 from .. import config
 from ..agent.agent import RaAgent
-from ..mcp_server.server import _get_pipeline, _load_ra_tasks
+from ..mcp_server.server import _get_pipeline
 from ..observability import gate_stats
+from ..ra.tasks import load_ra_tasks
 
 agent = RaAgent()
 
@@ -100,7 +101,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
 @app.get("/api/deadlines")
 async def deadlines() -> JSONResponse:
-    return JSONResponse(_load_ra_tasks()["deadlines"])
+    return JSONResponse(load_ra_tasks()["deadlines"])
 
 
 @app.get("/", response_class=HTMLResponse)
