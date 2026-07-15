@@ -580,3 +580,61 @@ def test_causality_boundary_is_clause_terminators_only():
     assert not assess_causality("호전·회복되지 않음").signals["중단 후 호전(dechallenge)"]
     # v9 '부정된 마커 건너뛰기' 가드가 줄바꿈에도 성립(마커가 부정되면 창 안 열림)
     assert not assess_causality("중단하지\n않았는데도 호전됨.").signals["중단 후 호전(dechallenge)"]
+
+
+# ---------------------------------------------------------------------------
+# v12 회귀 — v11 봉합의 반대편(과탐/미탐) 재봉합
+# ---------------------------------------------------------------------------
+def test_triage_death_short_markers_no_substring_overfire():
+    """짧은 사망 마커가 무관 행정·조세 어휘에 substring 오발화하지 않는다(v12).
+
+    v11 recall-first 가 '급사'·'별세'·'운명하'를 bare 로 넣어 '공급사'·'지급사유'·
+    '특별세'·'운명하에'가 serious=True·D+0(지체없이)로 오라우팅됐다 — 형태소
+    확정형으로 좁혀 과탐을 막되, 진짜 사망은 잡는다(recall 유지)."""
+    for txt in ["백신 공급사가 변경된 로트", "보험 지급사유 확인 중 경증 오심",
+                "특별세액공제 관련 문의", "개별세대로 독거 중"]:
+        assert not assess_case(txt, "").is_serious, txt
+    # 진짜 사망(형태소 확정형·완곡어 보강)은 여전히 중대
+    for txt in ["환자가 급사하였다", "향년 82세로 별세하셨다", "소천하셨다",
+                "타계하셨습니다", "서거함", "숨을 거두었다"]:
+        r = assess_case(txt, "")
+        assert r.is_serious and "사망" in r.criteria_met, txt
+
+
+def test_report_hanuisa_institution_not_reporter():
+    """기관명 '대한한의사협회'·'한약사회'는 보고자가 아니다 — 조용한 통과 금지(v12).
+
+    v11 이 한의사·한약사를 substring 마커로 둬 기관명에 ② 오발화했다. 의사/약사에
+    이미 쓴 어절 경계 룩비하인드를 신규 마커에 전파해 대칭화."""
+    for txt in ["대한한의사협회가 안전성 서한 발행. 50세 남성이 아스피린정 복용 후 두드러기.",
+                "한약사회 회보에 게재된 사례. 50세 남성이 아스피린정 복용 후 발진."]:
+        assert any("보고자" in m for m in build_report(txt).missing), txt
+    # 진짜 보고자(한의사가/한약사가)는 여전히 인정
+    assert not any("보고자" in m for m in build_report(
+        "한의사가 처방한 약 복용 후 환자에게 두드러기 발생했다고 보고").missing)
+
+
+def test_report_child_marker_positive_noun_boundary():
+    """소아 '남아'는 명사 문맥(조사·환자 직후)에서만 ①신호 — 동사 남다 배제(v12).
+
+    v11 의 부정 열거(있|계|서|났|나서)가 '약이 남아도'·종결 '남아' 를 놓쳐 조용한
+    통과가 재발했다. 명사 용법 긍정 경계로 뒤집어 동사 활용 전체를 배제."""
+    assert any(m.startswith("①") for m in build_report(
+        "지난 약이 남아도 타이레놀정을 복용 후 두드러기. 의사가 보고.").missing)
+    # 명사 용법(남아가/3세 남아)은 유지
+    assert not any(m.startswith("①") for m in build_report(
+        "3세 남아가 B정 복용 후 발진. 어머니가 보고함.").missing)
+
+
+def test_causality_newline_boundary_is_continuation_aware():
+    """줄바꿈은 절 종결자이되, 직후가 용언 연속이면 같은 절로 본다(v12).
+
+    v11 이 \\n 을 경계에서 빼 '호전\\n되지 않음'(용언 랩)은 살렸으나 '회복\\n이상
+    없음'(절 구분)에서 '없'이 회복을 부정해 rationale 이 사실과 반대로 단언됐다.
+    연속 인지 경계로 양방향을 모두 봉합."""
+    # 절 구분 줄바꿈: 다음 절 부정이 회복을 오염시키지 않는다(양성 dechallenge 유지)
+    assert assess_causality("중단하니 회복\n이상없음").signals["중단 후 호전(dechallenge)"]
+    assert assess_causality("중단하니 회복, 이상없음").signals["중단 후 호전(dechallenge)"]  # v10 유지
+    # 용언 내부 줄바꿈: 부정은 여전히 잡는다(과대평가 방지 유지)
+    assert not assess_causality("중단 후 호전\n되지 않음").signals["중단 후 호전(dechallenge)"]
+    assert not assess_causality("중단하지\n않았는데도 호전됨").signals["중단 후 호전(dechallenge)"]

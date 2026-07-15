@@ -136,7 +136,7 @@
 
   <!-- RAG pipeline box -->
   <rect x="60" y="818" width="300" height="112" rx="12" fill="#101d17" stroke="#33c3a6" stroke-width="1.5"/>
-  <text x="80" y="844" fill="#a7d8cb" font-size="13" font-weight="700">📚 RA 도메인 ① 규제문서 검색(RAG)</text>
+  <text x="80" y="844" fill="#a7d8cb" font-size="13" font-weight="700">📚 RA 도메인 규제문서 검색(RAG)</text>
   <text x="80" y="868" fill="#e6edf3" font-size="11.5">질의확장 → 하이브리드(벡터+BM25)</text>
   <text x="80" y="888" fill="#e6edf3" font-size="11.5">→ 리랭킹 v3 (4신호+섹션 prior)</text>
   <text x="80" y="908" fill="#8aa0b4" font-size="10.5">버전 필터: 폐지본 제외 · as_of '당시 현행'</text>

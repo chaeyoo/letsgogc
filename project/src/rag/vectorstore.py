@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .chunker import Chunk
-from .embedder import EmbeddingProvider, SparseVec, cosine
+from .embedder import EmbeddingProvider, SparseVec
 
 
 @dataclass
@@ -30,12 +30,8 @@ class InMemoryVectorStore:
         self.embedder.fit([c.text for c in chunks])
         self.vectors = [self.embedder.embed(c.text) for c in chunks]
 
-    def search(self, query: str, top_k: int) -> list[Scored]:
-        """의미 검색(코사인 유사도) 상위 top_k."""
-        qv = self.embedder.embed(query)
-        scored = [
-            Scored(chunk=c, score=cosine(qv, v))
-            for c, v in zip(self.chunks, self.vectors)
-        ]
-        scored.sort(key=lambda s: s.score, reverse=True)
-        return scored[:top_k]
+    # 주: 순수 코사인 검색 메서드는 v12 에서 제거했다 — 호출부가 없는 데드코드였고,
+    # 버전 필터(폐지본·미래 시행일 제외)와 무신호 계약을 우회하는 경로라, 향후 누가
+    # 배선하면 폐지 구판이 그대로 새는 유지보수 함정이었다. 실제 검색은 HybridRetriever
+    # 가 store.chunks/store.vectors 를 직접 읽어 _candidate_indices(버전 필터) 뒤에서
+    # 수행한다(retriever.py). cosine 은 그 경로가 embedder 에서 직접 쓴다.

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
 _CJK_RE = re.compile(r"[가-힣一-鿿]+")
@@ -21,7 +22,14 @@ _STOP = {
 
 def tokenize(text: str) -> list[str]:
     """텍스트를 검색용 토큰 리스트로 변환."""
-    text = text.lower()
+    # NFKC 정규화(v12) — 코퍼스·질의가 **같은 초크포인트**를 지나 대칭 정규화된다.
+    # 종전에는 마스킹(redactor)만 NFKC 하고 RAG 인덱싱·질의엔 정규화가 없어,
+    # 실 규제문서에 흔한 호환·전각 문자(㎎·㎖·①·℃·전각 영숫자)가 `[A-Za-z0-9]`·
+    # `[가-힣]` 어디에도 안 걸려 통째로 탈락 → 색인·매칭에서 조용히 소실됐다
+    # (현 데모 코퍼스는 clean ASCII 라 잠복이나, scripts/ingest_pdf.py 로 실 PDF 를
+    # 반입하면 즉시 발화). NFKC 는 ㎎→mg·①→(원문자 해체) 등으로 접어 검색 가능하게
+    # 만들고, 질의·코퍼스 양쪽을 여기서 접으므로 정규화 비대칭도 함께 닫힌다.
+    text = unicodedata.normalize("NFKC", text).lower()
     tokens: list[str] = []
 
     # 영문/숫자 단어
