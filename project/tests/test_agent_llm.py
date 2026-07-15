@@ -147,6 +147,32 @@ async def test_llm_tool_grounded_answer_is_grounded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_empty_search_is_not_grounded(monkeypatch):
+    """도구를 불렀지만 검색이 0건이면 grounded=False (v10 회귀 가드).
+
+    빈 검색 출력도 신뢰 소스로 직렬화되므로('{"results": []}') 종전
+    grounded=bool(trusted_texts) 는 이 빈 봉투를 참으로 세어, 출처 0건·근거
+    0건 답변이 근거 배지를 달고 나갔다 — v7 이 '도구 미호출' 경로에서 막은
+    바로 그 오탐이 '도구 호출·빈 결과' 경로에 잔존한 형태다. 오프라인 모드는
+    같은 무근거 질의를 abstention 으로 grounded=False 로 라벨링하므로(모드 간
+    대칭), LLM 모드도 빈 결과에는 grounded=False 여야 한다."""
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="tool_use", content=[
+            _Block(type="tool_use", id="t1", name="search_regulations",
+                   input={"query": "우리 팀 회식 장소 추천해줘"}),  # 무신호 → 빈 결과
+        ]),
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text="회식 장소로는 한식당을 추천합니다."),
+        ]),
+    ])
+    r = await RaAgent().chat("회식 장소 추천")
+    assert r.mode == "llm"
+    assert r.tool_calls and r.tool_calls[0].name == "search_regulations"
+    assert r.grounded is False   # 빈 결과는 근거가 아니다
+    assert not r.citations
+
+
+@pytest.mark.asyncio
 async def test_llm_api_failure_is_explicit_not_500(monkeypatch):
     """LLM API 호출 실패(잘못된 키·네트워크·모델명)는 예외 전파(HTTP 500)가
     아니라 명시적 안내 답변이 된다 — 가장 흔한 온보딩 실패 경로의 시끄럽고

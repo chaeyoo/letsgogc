@@ -187,6 +187,24 @@ def _is_contract_error(data: Any) -> bool:
     return isinstance(data, dict) and "error" in data
 
 
+def _captured_evidence(data: Any) -> bool:
+    """도구 출력이 실제 '근거'를 담았는가 — grounded 신호 계산용(v10).
+
+    검색이 0건이면 그 출력이 신뢰 소스로 직렬화돼도('{"results": []}') 근거는
+    아니다: grounded=bool(trusted_texts) 는 이 빈 봉투를 참으로 세어, 도구를
+    부르되 아무것도 못 찾은(출처 0건) 답변이 근거 배지를 달고 나가게 했다 —
+    v7 이 '도구 미호출' 경로에서 막은 바로 그 '출처 0건 grounded' 오탐이
+    '도구 호출·빈 결과' 경로에 잔존한 형태(안전장치가 한쪽 경로에만 배선된
+    비대칭). 오프라인 모드는 같은 무근거 질의를 abstention 으로 grounded=False
+    로 라벨링하는데 LLM 모드만 True 였다. 검색류(results 키)는 결과가 비지
+    않을 때만 근거로 세고, results 키가 없는 결정론 도구(트리아지·마감·초안)의
+    출력은 그 자체가 근거다.
+    """
+    if isinstance(data, dict) and "results" in data:
+        return bool(data["results"])
+    return True
+
+
 def _finalize(
     result: AgentResult,
     trusted_texts: list[str],
@@ -252,6 +270,7 @@ class RaAgent:
         tool_calls: list[ToolCall] = []
         raw_search_results: list[dict] = []
         trusted_texts: list[str] = []   # 사후 검증의 신뢰 소스(성공한 도구 출력 전체)
+        evidence_captured = False       # 실제 근거(비어 있지 않은 도구 출력)를 확보했는가 — grounded 신호
         # 이력(as_of·include_superseded) 검색이 '실제로 반환한' 문서 집합 —
         # 이 문서들의 폐지본 인용만 경고에서 면제한다. 전역 bool 로 켜면 같은
         # 턴의 현행 검색에 (상류 결함으로) 섞여 든 폐지본 인용까지 경고가 꺼져,
@@ -311,11 +330,13 @@ class RaAgent:
                             tool_calls=tool_calls,
                             citations=_collect_citations(tool_calls, raw_search_results),
                             # LLM 모드에는 문턱 기반 abstention 이 없다(오프라인 검색
-                            # 경로 전용) — grounded 는 '성공한 도구 출력이 신뢰 소스로
-                            # 확보되었는가'다. 모델이 도구 없이 답하면 False: 이전에는
-                            # dataclass 기본값 True 가 그대로 노출되어, 출처 0건 답변이
-                            # 근거 보증 배지를 달고 나갔다(범위의 과확장 — v7 발견).
-                            grounded=bool(trusted_texts),
+                            # 경로 전용) — grounded 는 '성공한 도구 출력이 실제 근거를
+                            # 확보했는가'다. 모델이 도구 없이 답하거나(도구 미호출)
+                            # 검색이 0건이면(빈 결과) False: 이전에는 dataclass 기본값
+                            # True(v7 전) 와 bool(trusted_texts)(v7~v9) 가 각각
+                            # '도구 미호출'·'빈 결과' 답변에 근거 배지를 달았다 —
+                            # _captured_evidence 가 빈 검색 봉투를 근거에서 뺀다(v10).
+                            grounded=evidence_captured,
                         ),
                         trusted_texts,
                         question=_question_context(message, history),
@@ -341,6 +362,8 @@ class RaAgent:
                         stripped, facts = _split_user_facts(data)
                         trusted_texts.append(_stringify(stripped))
                         user_facts.extend(facts)
+                        if _captured_evidence(data):
+                            evidence_captured = True
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations" and "results" in data:
                             # 성공한 검색만 집계한다 — 형식 오류로 실패한 as_of

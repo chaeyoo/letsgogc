@@ -26,7 +26,7 @@ import time
 from src import config
 from src.rag.pipeline import RagPipeline
 
-from .evaluate import _context_recall, _hit_rank, _load_qa
+from .evaluate import _context_recall, _gold_ids, _hit_rank, _load_qa
 
 _COLS = ["Hit@1", "MRR", "ContextRecall", "HardNegHit@1", "mean_ms"]
 
@@ -47,7 +47,13 @@ def run_config(pipe: RagPipeline, *, top_k: int = None, rerank_n: int = 1,
         )
         latencies.append((time.perf_counter() - t0) * 1000.0)
         doc_ids = [s.chunk.doc_id for s in results]
-        rank = _hit_rank(doc_ids, item["relevant_doc_id"])
+        # 정답 라벨은 _gold_ids 로 판정한다(v10) — 복수 정답(accept_doc_ids)이
+        # 있으면 집합 멤버십으로. 종전엔 raw relevant_doc_id(단일 str)만 봐서
+        # v9 의 홀드아웃/재심사 라벨 교정이 스윕 소비자에는 전파되지 않았고,
+        # 축을 겹쳐 스윕하면 정당한 복수 정답(예: 재심사 REG-001)이 1위여도
+        # 거짓 Hit@1 미스로 집계됐다(정본 앵커가 아닌 사본을 물던 형태 —
+        # evaluate.py 는 이미 _gold_ids 를 쓴다).
+        rank = _hit_rank(doc_ids, _gold_ids(item))
         hits1 += rank == 1
         mrr_sum += (1.0 / rank) if rank else 0.0
         if item.get("hard_negative"):
