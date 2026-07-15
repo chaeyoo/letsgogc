@@ -305,8 +305,15 @@ class VerificationResult:
 
     @property
     def question_origin(self) -> list[str]:
-        """미확인 클레임 중 사용자 질문에 있던 값(전제 에코 — 경고 문구를 달리 한다)."""
-        return [c.claim for c in self.checks if not c.supported and c.from_question]
+        """미확인 수치·날짜 클레임 중 사용자 질문에 있던 값(전제 에코 — 경고 문구를
+        달리 한다). **numeric·date 로 한정**한다(v10): 방향·역할 축의 from_question
+        완화는 warning_text 의 각 축 블록이 직접 처리하는데, kind 미필터이면 방향·
+        역할 클레임(supported=False 라 항상 충돌)이 이 축으로 새어 '⚠ 전제 확인
+        필요: 수치 …' 블록에 오분류·이중 경고되고 계기판 by_axis 도 이중 집계됐다."""
+        return [
+            c.claim for c in self.checks
+            if not c.supported and c.from_question and c.kind in ("numeric", "date")
+        ]
 
     @property
     def case_origin(self) -> list[str]:
@@ -329,12 +336,12 @@ class VerificationResult:
 
     @property
     def ok(self) -> bool:
-        return (
-            not self.unsupported
-            and not self.direction_conflicts
-            and not self.role_conflicts
-            and not self.superseded_cited
-        )
+        # ok 는 '차단 축'(BLOCKING_AXES)에서 파생한다(v10) — 종전에는 축을 손으로
+        # 나열해, 새 차단 축을 ok 에 배선하면서 WARNING_AXES 에 등록하지 않으면
+        # warn_rate 만 오르고 by_axis 귀속·자가 테스트가 없는 축이 배포됐다
+        # (7-7 패턴3 '정본 앵커'가 봉합하지 않은 마지막 결합). 정본을 한 곳
+        # (BLOCKING_AXES)에 두고, BLOCKING⊆WARNING 은 메타테스트가 강제한다.
+        return not any(getattr(self, axis) for axis in BLOCKING_AXES)
 
     def summary(self) -> dict:
         """API/UI 노출용 요약."""
@@ -368,6 +375,14 @@ WARNING_AXES = (
     "question_origin", "superseded_cited",
 )
 LABEL_AXES = ("case_origin",)
+# ok 를 실패(False)시키는 '차단 축'의 정본(v10) — VerificationResult.ok 는 이
+# 목록에서 파생한다. WARNING_AXES 의 부분집합이어야 하며(전제 라벨
+# question_origin 은 경고 문구만 바꾸는 비차단 축이라 제외), 그 결합은
+# test_verifier 의 메타테스트가 강제한다 — 새 차단 축을 추가하면 WARNING_AXES
+# 등록(→ by_axis 집계·preflight 자가 테스트)이 구조로 강제된다.
+BLOCKING_AXES = (
+    "unsupported", "direction_conflicts", "role_conflicts", "superseded_cited",
+)
 
 
 @dataclass(frozen=True)

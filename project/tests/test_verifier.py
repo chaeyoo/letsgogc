@@ -4,7 +4,15 @@ from __future__ import annotations
 import pytest
 
 from src.agent.agent import RaAgent
-from src.verify.verifier import extract_claims, verify_answer, warning_text
+from src.verify.verifier import (
+    BLOCKING_AXES,
+    WARNING_AXES,
+    ClaimCheck,
+    VerificationResult,
+    extract_claims,
+    verify_answer,
+    warning_text,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -671,8 +679,13 @@ def test_direction_conflict_from_question_labeled():
     )
     check = next(c for c in r.checks if c.kind == "direction")
     assert not r.ok and check.from_question       # 경고 유지 + 라벨
-    assert "15일 이후" in r.question_origin        # 계기판 축에도 반영
-    assert "전제" in warning_text(r)               # 문구 조정
+    # F6(v10): 방향 클레임은 question_origin(수치·날짜 전제 축)으로 새지 않는다 —
+    # 방향의 from_question 완화는 방향 블록이 직접 처리하므로, 이 축에 섞이면
+    # '⚠ 전제 확인 필요: 수치 …' 블록으로 오분류·이중 경고된다.
+    assert "15일 이후" not in r.question_origin
+    wt = warning_text(r)
+    assert "전제" in wt and "방향" in wt            # 방향 블록이 전제 문구로 조정
+    assert "전제 확인 필요: 수치" not in wt          # 수치 전제 블록으로 오분류 안 됨
     # 질문에 그 방향이 없으면 종전대로 무조건 경고 문구
     r2 = verify_answer("15일 이후에 보고하면 됩니다", ["인지일로부터 15일 이내 신속보고"])
     check2 = next(c for c in r2.checks if c.kind == "direction")
@@ -702,3 +715,47 @@ def test_direction_from_case_included_in_case_origin():
     )
     assert "15일 이후" in r.case_origin
     assert "15일 이후" in r.summary()["case_origin"]
+
+
+def test_question_origin_is_numeric_date_only_not_direction_role():
+    """question_origin(전제 에코 축)은 numeric·date 로 한정된다 — 방향·역할의
+    from_question 완화는 각 축 블록이 직접 처리하므로, 이 축에 섞이면 '⚠ 전제
+    확인 필요: 수치 …' 로 오분류·이중 경고되고 계기판 by_axis 도 이중 집계된다. (v10)"""
+    # 방향 클레임(from_question) — 방향 축에서 완화되고 question_origin 엔 안 뜬다
+    rd = verify_answer(
+        "아니요, 15일 이후가 아니라 15일 이내입니다",
+        ["인지일로부터 15일 이내 신속보고"],
+        question="신속보고는 15일 이후에 하면 되나요?",
+    )
+    assert rd.question_origin == []
+    wt = warning_text(rd)
+    assert "방향" in wt and "전제" in wt          # 방향 블록이 전제 문구로 조정
+    assert "전제 확인 필요: 수치" not in wt        # 수치 전제 블록으로 오분류 안 됨
+    # 수치 클레임(from_question)은 여전히 question_origin 에 잡힌다(회귀 방지)
+    rn = verify_answer(
+        "30일이 아니라 15일 이내입니다",
+        ["인지일로부터 15일 이내"],
+        question="보고 기한이 30일 맞나요?",
+    )
+    assert "30일" in rn.question_origin
+
+
+def test_ok_derived_from_blocking_axes_subset_of_warning_axes():
+    """ok 는 BLOCKING_AXES 정본에서 파생하고, 그 집합은 WARNING_AXES 의
+    부분집합이다 — 새 차단 축을 ok 에 배선하면서 계기판·자가 테스트(WARNING_AXES)
+    등록을 빠뜨리면 warn_rate 만 오르고 by_axis 귀속 없는 축이 배포되는 결합을
+    구조로 막는다(7-7 패턴3 정본 앵커가 봉합하지 않은 마지막 결합, v10)."""
+    assert set(BLOCKING_AXES) <= set(WARNING_AXES)
+    # 각 차단 축이 실제로 ok 를 False 로 만든다(파생의 정합)
+    for axis, kind in [
+        ("unsupported", "numeric"), ("direction_conflicts", "direction"),
+        ("role_conflicts", "role"),
+    ]:
+        v = VerificationResult(checks=[
+            ClaimCheck(claim="x", kind=kind, supported=False)
+        ])
+        assert not v.ok and getattr(v, axis)
+    # 비차단 경고 축(question_origin)만으로는 ok 를 깨지 않는다 — 전제 라벨은
+    # 경고 '문구'만 바꾸는 축이라 WARNING_AXES 이되 BLOCKING_AXES 는 아니다
+    assert "question_origin" in WARNING_AXES
+    assert "question_origin" not in BLOCKING_AXES

@@ -36,11 +36,20 @@ _NEGATION_TAIL_RE = re.compile(r"않|없|아니|아닌")
 # "되지 않"·"하지는 않"·"은 없음" 이 들어오는 최소 폭 — 더 넓히면 다음 절의
 # 무관한 부정("호전됐고, 발열은 없다")까지 삼켜 반대 방향 오탐이 된다.
 _NEGATION_SPAN = 6
+# 절(clause) 경계 — 부정 어미는 긍정 어휘와 '같은 절'에 붙는 활용형(회복되지
+# 않)일 때만 그 어휘의 부정이다. 창이 쉼표·마침표를 넘어가면 다음 절의 무관한
+# 부정("중단하니 회복, 이상없음"의 '없음'은 회복이 아니라 이상의 부정)을 삼켜
+# 양성 경과를 반증으로 뒤집는다 — span=6 만으로는 짧은 쉼표 절을 못 막았다(v10).
+_CLAUSE_BOUNDARY_RE = re.compile(r"[,.;:!?·…\n、。]")
 
 
 def _negated_after(text: str, end: int) -> bool:
-    """text[end:] 기준 N자 이내에 부정 어미(않·없·아니)가 있는가."""
-    return bool(_NEGATION_TAIL_RE.search(text[end : end + _NEGATION_SPAN]))
+    """text[end:] 기준 N자 이내(단, 절 경계 전까지)에 부정 어미가 있는가."""
+    win = text[end : end + _NEGATION_SPAN]
+    boundary = _CLAUSE_BOUNDARY_RE.search(win)
+    if boundary:
+        win = win[: boundary.start()]   # 다음 절의 부정은 이 어휘의 부정이 아니다
+    return bool(_NEGATION_TAIL_RE.search(win))
 
 
 def _polarity(win: str, positive_words: list[str]) -> str:

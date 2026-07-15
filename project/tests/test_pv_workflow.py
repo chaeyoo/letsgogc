@@ -58,6 +58,23 @@ def test_causality_negative_dechallenge_is_not_positive():
     assert c.suggested == POSSIBLE
 
 
+def test_causality_adjacent_clause_negation_does_not_flip_outcome():
+    """다음 절의 무관한 부정("회복, 이상없음"의 '없음')이 경과 어휘의 부정으로
+    삼켜지지 않는다 — 양성 dechallenge/rechallenge 를 반증으로 뒤집는 오탐 금지. (v10)
+
+    v9 의 부정 어미 일반 규칙(_NEGATION_SPAN=6)이 쉼표로 이어진 짧은 후속 절의
+    '다른 증상에 대한 부정'까지 창에 넣어, "중단하니 회복, 이상없음"이
+    not_improved 로 뒤집히고(v8 대비 회귀) rationale 이 케이스("회복")와 정면
+    모순됐다. 절 경계(쉼표·마침표)에서 창을 끊어 봉합."""
+    c = assess_causality("아스피린 복용 후 두드러기. 중단하니 회복, 이상없음.")
+    assert c.signals["중단 후 호전(dechallenge)"]        # 회복 = 양성 dechallenge
+    c2 = assess_causality("복용 후 두통. 재투여하니 재발, 발열 없음.")
+    assert c2.signals["재투여 후 재발(rechallenge)"]      # 재발 = 양성 rechallenge
+    # 같은 절 부정("호전되지 않았다")은 여전히 부정으로 잡힌다(과교정 방지)
+    c3 = assess_causality("복용 후 두통, 중단해도 호전되지 않았다")
+    assert not c3.signals["중단 후 호전(dechallenge)"]
+
+
 def test_causality_negated_alternative_is_not_present():
     """"병용약물은 없었다" 부정문이 대체원인 '있음'으로 오탐되지 않는다. (v8)
 
@@ -336,6 +353,25 @@ def test_report_hospital_reporting_still_counts():
     """보고 행위가 결합된 "병원에서 보고"는 여전히 보고자로 인정된다. (v8)"""
     r = build_report("45세 남성 환자가 항생제A정을 복용 후 두드러기 발생. 병원에서 보고된 케이스")
     assert not any("보고자" in m for m in r.missing)
+
+
+def test_report_reporter_not_fired_by_embedded_compound(monkeypatch=None):
+    """'주의사항'·'제약사'의 '의사'/'약사'는 보고자가 아니다 — 조용한 통과 금지. (v10)
+
+    v9 는 '의사(?!소통|…)' 룩어헤드로 접두 합성어만 막았으나, '의사'가 어절
+    중간에 박힌 최빈 합성어(주(注)+의사(意事)+항=주의사항, 유의사항)와 '제약사'
+    (제+약사)는 그대로 보고자로 발화해, 보고자 없는 케이스가 reportable=True 로
+    통과했다(v9 봉합의 반대편 미탐). 어절 경계(앞이 한글이면 비매칭)로 봉합."""
+    r = build_report("45세 남성 환자가 아스피린정을 복용 후 두드러기 발생. 복용 주의사항을 안내받음.")
+    assert not r.reportable
+    assert any("보고자" in m for m in r.missing)
+    # 진짜 보고자(어절 첫 음절의 '의사'/'약사')는 여전히 인정된다(과교정 방지)
+    assert not any(
+        "보고자" in m
+        for m in build_report(
+            "45세 남성 환자가 아스피린정을 복용 후 두드러기. 담당 의사가 신고함."
+        ).missing
+    )
 
 
 def test_coding_jaundice_is_independent_pt():

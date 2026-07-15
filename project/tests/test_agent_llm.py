@@ -147,6 +147,30 @@ async def test_llm_tool_grounded_answer_is_grounded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_empty_search_result_is_not_grounded(monkeypatch):
+    """도구를 호출해 '성공했으나 결과 0건'인 검색은 grounded=True 로 만들지
+    않는다 — citations=[] 인데 grounded=True 인 모순 차단. (v10)
+
+    빈 검색 결과({"results": []}, as_of 가 전 문서 이전)는 에러도 에러 계약도
+    아니라 신뢰 소스에 stringify 되어 쌓인다 — grounded 를 bool(trusted_texts)
+    로 내면 v7 이 봉합한 '출처 0건+근거 배지'가 '도구 호출·성공하나 결과 0건'
+    경로로 재발한다(오프라인은 빈 검색에 grounded=False 로 강등 — 그 대칭)."""
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="tool_use", content=[
+            _Block(type="tool_use", id="t1", name="search_regulations",
+                   input={"query": "중대한 이상사례 보고 기한", "as_of": "1900-01-01"}),
+        ]),
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text="해당 시점에는 확인되는 규정이 없습니다."),
+        ]),
+    ])
+    r = await RaAgent().chat("1900년 시점의 이상사례 보고 기한은?")
+    assert r.mode == "llm"
+    assert r.citations == []          # 빈 검색 — 출처 0건
+    assert r.grounded is False        # 출처 0건이면 근거 보증 배지도 없다
+
+
+@pytest.mark.asyncio
 async def test_llm_api_failure_is_explicit_not_500(monkeypatch):
     """LLM API 호출 실패(잘못된 키·네트워크·모델명)는 예외 전파(HTTP 500)가
     아니라 명시적 안내 답변이 된다 — 가장 흔한 온보딩 실패 경로의 시끄럽고

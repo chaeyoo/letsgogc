@@ -26,7 +26,7 @@ import time
 from src import config
 from src.rag.pipeline import RagPipeline
 
-from .evaluate import _context_recall, _hit_rank, _load_qa
+from .evaluate import _context_recall, _gold_ids, _hit_rank, _load_qa
 
 _COLS = ["Hit@1", "MRR", "ContextRecall", "HardNegHit@1", "mean_ms"]
 
@@ -47,7 +47,10 @@ def run_config(pipe: RagPipeline, *, top_k: int = None, rerank_n: int = 1,
         )
         latencies.append((time.perf_counter() - t0) * 1000.0)
         doc_ids = [s.chunk.doc_id for s in results]
-        rank = _hit_rank(doc_ids, item["relevant_doc_id"])
+        # 복수 정답 교정(accept_doc_ids)을 evaluate 와 동일하게 전파한다 — 단일
+        # 라벨을 직접 넘기면, 하이퍼파라미터를 흔든 설정에서 동등 정답 문항이
+        # miss 로 갈려 라벨 아티팩트가 파라미터 효과로 오귀속된다(v10).
+        rank = _hit_rank(doc_ids, _gold_ids(item))
         hits1 += rank == 1
         mrr_sum += (1.0 / rank) if rank else 0.0
         if item.get("hard_negative"):
