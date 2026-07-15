@@ -32,17 +32,34 @@ from .coding import (
 from .triage import TriageResult, assess_case
 
 # 최소보고요건 감지 신호 (마스킹된 텍스트에서도 남는 '존재 신호' 위주)
-_PATIENT_MARKERS = ["환자", "[이름]", "환아", "수진자"]
-_PATIENT_RE = re.compile(r"\d{1,3}\s*세|[남여]성|남아|여아")
+_PATIENT_MARKERS = ["환자", "환아", "수진자"]
+# 나이 정규식: '세' 뒤가 '대'로 이어지는 "3세대(세팔로스포린)"는 세대(generation)
+# 표기이지 환자 나이가 아니다 — 후방 경계로 배제한다(v9).
+_PATIENT_RE = re.compile(r"\d{1,3}\s*세(?!대)|[남여]성|남아|여아")
+# 마스킹 토큰 [이름] 은 환자·보고자를 구분하지 않는다 — 보고자 직역(의사·약사 등)
+# 바로 뒤(공백 0~1자)에 붙은 [이름] 은 보고자 성명일 개연성이 높은데, 이를 환자
+# 요건 ①의 신호로 전용하면 보고자만 있는 케이스가 ①을 조용히 통과한다(v9).
+# 직역에 직결된 [이름] 만 좁게 제외한다 — 독립 [이름](PV-009 등)의 ①신호는 유지.
+_REPORTER_NAME_TOKEN_RE = re.compile(
+    r"(?:보고자|의사|약사|간호사|의료진|보호자)\s?\[이름\]"
+)
 # "병원에서" 단독 마커는 치료 문맥("병원에서 치료받았다")을 보고자로 오탐해
 # 보고자 정보가 없는 케이스를 reportable=True 로 '조용히 통과'시켰다(v8) —
 # 이 모듈의 실패 방향은 '시끄러운 보완 요청'이어야 하므로, 병원 언급은
 # 보고 행위가 결합된 형태만 인정한다.
-_REPORTER_MARKERS = ["보고자", "의사", "약사", "간호사", "보호자", "본인이 직접", "의료진", "병원에서 보고", "병원이 보고"]
+_REPORTER_MARKERS = ["보고자", "간호사", "보호자", "본인이 직접", "의료진", "병원에서 보고", "병원이 보고"]
+# "의사"·"약사"는 합성어 부분 매칭이 잦다 — "의사소통"·"의사결정"·"의사표시"의
+# '의사'는 intent, "약사법"의 '약사'는 법령명이지 사람(보고자)이 아닌데, 단순
+# substring 은 이를 전부 ②요건 충족으로 밀어 '조용한 통과'가 됐다(v9).
+# 합성어를 이루는 후행 어절만 네거티브 룩어헤드로 차단한다.
+_REPORTER_RE = re.compile(r"의사(?!소통|결정|표시|표현)|약사(?!법)")
 # 의심약 감지: "OO정/캡슐/주사 + 복용/투여" 처럼 노출(exposure) 맥락이 따라올 때만
 # 매칭한다 — '규정·판정·일정' 같은 '-정'으로 끝나는 일반 명사의 오탐을 막기 위해.
+# 제품명 토큰은 비숫자 문자로 시작해야 한다 — "아스피린 1정을 복용"의 "1정"은
+# 수량(dose)이지 제품명이 아닌데, 수량 토큰만으로 ③요건이 충족되면 제품명·성분
+# 없는 케이스가 보완 요청 없이 통과한다(v9). 수량뿐이면 미충족(시끄러운 보완 요청).
 _DRUG_RE = re.compile(
-    r"[가-힣A-Za-z0-9]+\s*(?:정|캡슐|주사제|주사|시럽|연고|패치)"
+    r"[가-힣A-Za-z][가-힣A-Za-z0-9]*\s*(?:정|캡슐|주사제|주사|시럽|연고|패치)"
     r"(?=\s*(?:을|를)?\s*(?:복용|투여|접종|먹|맞))"
 )
 
@@ -69,16 +86,23 @@ def _check_minimum_criteria(
     fields: dict[str, str] = {}
     missing: list[str] = []
 
+    # 보고자 직역에 직결된 [이름](예: "담당 약사 [이름]님")을 걷어낸 뒤 남는
+    # [이름] 만 환자 존재 신호로 인정한다 — 역할 무구분 전용 방지(위 주석, v9).
+    patient_name_token = "[이름]" in _REPORTER_NAME_TOKEN_RE.sub("", case_text)
     if patient_info.strip():
         fields["환자"] = patient_info.strip()
-    elif any(m in case_text for m in _PATIENT_MARKERS) or _PATIENT_RE.search(case_text):
+    elif (
+        any(m in case_text for m in _PATIENT_MARKERS)
+        or patient_name_token
+        or _PATIENT_RE.search(case_text)
+    ):
         fields["환자"] = "케이스 서술에서 확인(비식별 처리됨) — 나이/성별/이니셜 보완 권장"
     else:
         missing.append("① 식별 가능한 환자 (나이·성별·이니셜 등 최소 식별 정보)")
 
     if reporter.strip():
         fields["보고자"] = reporter.strip()
-    elif any(m in case_text for m in _REPORTER_MARKERS):
+    elif any(m in case_text for m in _REPORTER_MARKERS) or _REPORTER_RE.search(case_text):
         fields["보고자"] = "케이스 서술에서 확인 — 보고자 자격(의사/약사/소비자 등) 명시 권장"
     else:
         missing.append("② 식별 가능한 보고자 (보고자 자격과 연락 경로)")

@@ -74,6 +74,17 @@ def test_expand_query_english_terms_need_word_boundary():
     assert "임상시험계획 승인" in expand_query("IND 제출 일정")
 
 
+def test_expand_query_longest_term_wins_over_substring():
+    """최장 일치 우선(v9): "라벨링"이 매칭한 구간에서 부분 문자열 표제어
+    "라벨"은 발화하지 않는다 — 라벨링과 무관한 확장어(첨부문서)가 실려
+    주제가 흐려지는 오탐 방지. 짧은 표제어 단독 질의의 확장은 불변이다."""
+    from src.rag.synonyms import expand_query
+    e = expand_query("라벨링 문구 기준은?")
+    assert "표시기재" in e and "첨부문서" not in e
+    e2 = expand_query("라벨 문구 기준은?")
+    assert "표시기재" in e2 and "첨부문서" in e2
+
+
 def test_expand_query_korean_terms_keep_substring_match():
     """한글 표제어는 조사·활용 직결("심각하게")이 정상이라 부분 매칭을 유지한다. (v8)"""
     from src.rag.synonyms import expand_query

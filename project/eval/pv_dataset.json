@@ -57,7 +57,7 @@
     ],
     "reportable": true
    },
-   "note": "시간관계 + dechallenge(+대체원인 없음) → Probable. 소비자(본인) 보고도 유효한 보고자."
+   "note": "시간관계 + dechallenge(대체원인 미언급 — 배제 확인이 아니므로 Certain 아님) → Probable. 소비자(본인) 보고도 유효한 보고자."
   },
   {
    "id": "PV-005",

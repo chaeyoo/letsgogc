@@ -102,18 +102,76 @@ def test_tasks_check_catches_stale_deadlines(tmp_path):
 
 
 def test_gate_self_tests_cover_every_warning_axis():
-    """자가 테스트의 축 대칭성 — 런타임 게이트의 모든 경고 축(GateStats._AXES)에
-    대해 '심은 오류' 케이스가 존재해야 한다. 처음에는 수치 존재 축만 자가
-    테스트했는데, 그러면 방향·역할·버전 축은 고장난 채 배포될 수 있다 —
-    새 축을 추가하면 이 테스트가 자가 테스트 추가를 강제한다."""
-    from src.observability import GateStats
+    """자가 테스트의 축 대칭성 — 런타임 게이트의 모든 경고 축에 대해 '심은
+    오류' 케이스가 존재해야 한다. 처음에는 수치 존재 축만 자가 테스트했는데,
+    그러면 방향·역할·버전 축은 고장난 채 배포될 수 있다 — 새 축을 추가하면
+    이 테스트가 자가 테스트 추가를 강제한다.
+
+    축 우주의 앵커는 검증기 자신(verifier.WARNING_AXES)이다(v9) — 종전에는
+    계기판(GateStats._AXES)의 수동 복제 튜플이 앵커라, 검증기에만 축을
+    추가하는 부분 변경에서 이 메타 검사가 통과한 채 자가 테스트 없는 축이
+    배포될 수 있었다('구조로 강제한다'는 주장의 숨은 전제가 미검사)."""
+    from src.verify.verifier import LABEL_AXES, WARNING_AXES
 
     planted_axes = {t["axis"] for t in preflight._GATE_SELF_TESTS if not t["expect_ok"]}
-    assert planted_axes == set(GateStats._AXES), (
-        f"자가 테스트 미커버 축: {set(GateStats._AXES) - planted_axes}"
+    assert planted_axes == set(WARNING_AXES), (
+        f"자가 테스트 미커버 축: {set(WARNING_AXES) - planted_axes}"
     )
     # 정상(clean) 케이스도 최소 1건 이상 — 오탐 방향의 자가 테스트
     assert any(t["expect_ok"] for t in preflight._GATE_SELF_TESTS)
+    # 라벨 축(ok 를 유지하는 등급 라벨)도 자가 테스트가 있어야 한다 — 라벨은
+    # 죽어도 응답이 계속 ok 라 고장 신호 자체가 없다.
+    labeled = {t["label"] for t in preflight._GATE_SELF_TESTS if t.get("label")}
+    assert set(LABEL_AXES) <= labeled, f"라벨 축 자가 테스트 누락: {set(LABEL_AXES) - labeled}"
+
+
+def test_axis_registry_matches_verifier_summary():
+    """축 정본(WARNING_AXES∪LABEL_AXES)과 검증기 summary() 키의 일치 — 검증기에
+    새 축(summary 키)을 추가하면 정본 등록·자가 테스트 추가가 연쇄로 강제된다.
+    계기판의 축 목록도 정본에서 파생됐는지 함께 고정한다(수동 복제 금지)."""
+    from src.observability import GateStats
+    from src.verify.verifier import LABEL_AXES, WARNING_AXES, verify_answer
+
+    summary_keys = set(verify_answer("답", ["근거"]).summary().keys())
+    non_axis_keys = {"ok", "checked", "checks"}
+    assert set(WARNING_AXES) | set(LABEL_AXES) == summary_keys - non_axis_keys, (
+        "검증기 summary 키와 축 정본이 어긋난다 — 새 축을 추가했으면 WARNING_AXES/"
+        f"LABEL_AXES 에 등록하고 preflight 자가 테스트를 추가할 것: {summary_keys - non_axis_keys}"
+    )
+    assert tuple(GateStats._AXES) == tuple(WARNING_AXES)
+
+
+def test_gate_self_test_asserts_direction_from_case_label():
+    """케이스 간섭 자가 테스트가 축 발화만이 아니라 from_case 라벨(case_origin)
+    의 생존까지 단언하는지 — 라벨만 죽으면 케이스 재서술에 '컴플라이언스 오류'
+    단정 문구가 붙는 오탐 방향으로 조용히 퇴행한다(v9)."""
+    case_tests = [
+        t for t in preflight._GATE_SELF_TESTS
+        if t.get("user_facts") and not t["expect_ok"] and t.get("axis") == "direction_conflicts"
+    ]
+    assert case_tests and all(t.get("label") == "case_origin" for t in case_tests)
+
+
+def test_corpus_check_catches_future_effective_active_without_predecessor(tmp_path):
+    """미래 시행일의 현행(active) 문서가 '시행 중인 구판' 없이 단독 존재하면
+    시행일까지 그 주제가 오늘 기준 검색에서 통째로 사라진다 — 스키마가 전부
+    유효한 채 주제 하나가 조용히 죽는 형태(형식/값 타당성은 다른 층). (v9)"""
+    import datetime as dt
+
+    future = (dt.date.today() + dt.timedelta(days=90)).isoformat()
+    past = (dt.date.today() - dt.timedelta(days=400)).isoformat()
+
+    # (a) 단독 미래 시행 active → 결함
+    _write_doc(tmp_path, "new.md", {"doc_id": "R-NEW", "title": "t", "version": "2.0",
+                                    "effective_date": future})
+    problems = preflight.check_corpus(tmp_path)
+    assert any("시행 중인 구판이 없다" in p for p in problems)
+
+    # (b) 시행 중인 구판이 함께 있으면 정상(개정 예고본 + 현행 구판의 정당한 공존)
+    _write_doc(tmp_path, "old.md", {"doc_id": "R-OLD", "title": "t", "version": "1.0",
+                                    "effective_date": past, "status": "superseded",
+                                    "superseded_by": "R-NEW"})
+    assert not any("시행 중인 구판" in p for p in preflight.check_corpus(tmp_path))
 
 
 def test_smoke_catches_broken_gate(monkeypatch):

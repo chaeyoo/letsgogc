@@ -16,7 +16,9 @@ TF-IDF/BM25 같은 어휘 기반 검색은 이 간극을 스스로 못 메우므
     의도된 동작이지만, 영문 표제어까지 부분 문자열로 보면 무관 단어 안에서
     발화한다 — "audit finding"의 'ind', "PVC 포장재"의 'pv'가 각각 임상시험·
     약물감시 확장을 일으켜 주제 표류로 이어졌다. 영문/숫자 표제어는 단어
-    경계(비영숫자 양측)에서만 매칭한다.
+    경계(비영숫자 양측)에서만 매칭한다. 한글 부분 문자열끼리는 최장 일치
+    우선(v9): "라벨링"이 매칭한 구간에서 "라벨"은 발화하지 않는다
+    (expand_query docstring 참고).
   - LLM 질의 재작성 대비: 결정론적(감사 가능)·저지연·무비용. 실무에선
     이 사전을 현업 용어집(신입 교육자료·SOP 용어 정의)에서 추출해 관리한다.
 """
@@ -55,16 +57,19 @@ SYNONYMS: dict[str, list[str]] = {
 }
 
 
-def _term_in(term: str, low: str) -> bool:
-    """표제어 매칭 — 영문/숫자 표제어는 단어 경계, 한글은 부분 문자열.
+def _term_spans(term: str, low: str) -> list[tuple[int, int]]:
+    """표제어의 모든 매칭 구간 [start, end) — 영문/숫자는 단어 경계, 한글은 부분 문자열.
 
     한글은 조사·활용이 직결되므로("심각하게") 부분 매칭이 맞고, 영문은
     합성어 내부 매칭("finding"⊃"ind", "pvc"⊃"pv")이 오탐이라 경계가 맞다 —
     같은 규칙을 양쪽에 쓰면 어느 한쪽이 반드시 깨지는 비대칭 지점(v8).
+    매칭 '위치'까지 반환하는 이유는 최장 일치 우선 판정(expand_query 참고).
     """
     if re.fullmatch(r"[a-z0-9 ]+", term):
-        return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", low) is not None
-    return term in low
+        pat = re.compile(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])")
+    else:
+        pat = re.compile(re.escape(term))
+    return [(m.start(), m.end()) for m in pat.finditer(low)]
 
 
 def expand_query(query: str) -> str:
@@ -73,14 +78,36 @@ def expand_query(query: str) -> str:
     질의 안에 사전 표제어가 등장하면 그 정식 용어를 뒤에 이어 붙인다.
     덧붙이기(append) 방식이라 원 질의 신호는 그대로 남고,
     BM25/TF-IDF 양쪽에서 확장어가 추가 매칭 기회를 만든다.
+
+    최장 일치 우선(v9): 긴 표제어가 매칭한 구간 '안'의 짧은 표제어 매칭은
+    발화로 치지 않는다 — "라벨링" 질의에서 부분 문자열 "라벨"(⊂"라벨링")까지
+    함께 발화하면 라벨링과 무관한 확장어(첨부문서)가 실려 주제가 흐려진다.
+    더 구체적인 표제어가 이미 설명하는 구간을 그 부분 문자열이 별도 신호로
+    승격하는 오탐이라, 영문 단어 경계(v8)와 같은 방향의 규율이다. 같은
+    표제어가 다른 위치에서 독립적으로 등장하면 그 매칭은 그대로 발화한다.
     """
     low = query.lower()
+    # 1) 긴 표제어부터 매칭 구간을 선점한다(동률 길이는 사전 정의 순 — 서로
+    #    다른 동률 표제어는 같은 구간을 점유할 수 없어 결과에 영향 없음).
+    claimed: list[tuple[int, int]] = []
+    fired: set[str] = set()
+    for term in sorted(SYNONYMS, key=len, reverse=True):
+        spans = [
+            s for s in _term_spans(term, low)
+            if not any(cs <= s[0] and s[1] <= ce for cs, ce in claimed)
+        ]
+        if spans:
+            fired.add(term)
+            claimed.extend(spans)
+    # 2) 확장어 부착 순서는 사전 정의 순을 유지한다(발화 판정과 분리 —
+    #    길이 정렬이 확장어 순서까지 바꾸면 기존 확장 질의가 흔들린다).
     extra: list[str] = []
     for term, expansions in SYNONYMS.items():
-        if _term_in(term, low):
-            for e in expansions:
-                if e.lower() not in low and e not in extra:
-                    extra.append(e)
+        if term not in fired:
+            continue
+        for e in expansions:
+            if e.lower() not in low and e not in extra:
+                extra.append(e)
     if not extra:
         return query
     return f"{query} {' '.join(extra)}"

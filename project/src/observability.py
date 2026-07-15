@@ -12,6 +12,8 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+from .verify.verifier import WARNING_AXES
+
 logger = logging.getLogger("rapv_assistant")
 if not logger.handlers:
     _h = logging.StreamHandler()
@@ -97,7 +99,11 @@ class GateStats:
     case_labeled: int = 0        # 케이스 서술 유래(from_case) 라벨이 붙은 응답
     by_axis: dict[str, int] = field(default_factory=dict)
 
-    _AXES = ("unsupported", "direction_conflicts", "role_conflicts", "question_origin", "superseded_cited")
+    # 축 목록의 정본은 검증기(verifier.WARNING_AXES)다 — 여기서 수동 복제
+    # 튜플을 유지하면, 검증기에 새 축을 추가하고 이 파일을 안 건드리는 부분
+    # 변경에서 자가 테스트 커버리지 메타 검사(축 우주가 이 튜플이었다)가
+    # 통과한 채 새 축이 계기판·자가 테스트 양쪽에서 조용히 빠진다(v9).
+    _AXES = WARNING_AXES
 
     def record(self, summary: dict) -> None:
         self.responses += 1
@@ -111,6 +117,9 @@ class GateStats:
         # 경고가 아닌 '등급 라벨'도 추이를 본다 — 케이스 서술 유래 지지가 갑자기
         # 늘면 답변이 규정 근거 대신 사용자 서술에 기대기 시작했다는 신호다
         # (경고율만 보면 이 이동은 보이지 않는다 — 라벨은 ok=True 이므로).
+        # 집계 기준은 from_case 라벨이 붙은 '모든' 체크다(v9) — summary 의
+        # case_origin 은 존재·방향 축의 from_case 를 모두 포함하도록 검증기
+        # 쪽에서 정의된다(docstring "from_case 라벨이 붙은 응답"과 집계의 일치).
         if summary.get("case_origin"):
             self.case_labeled += 1
         for axis in self._AXES:

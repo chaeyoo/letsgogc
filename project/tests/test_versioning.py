@@ -87,9 +87,53 @@ def test_malformed_effective_date_fails_closed_under_as_of():
     res = r.retrieve("심사 기간", top_k=5, rerank_n=5, as_of="2026-01-01")  # 크래시 없어야 함
     ids = {s.chunk.doc_id for s in res}
     assert "OK" in ids and "BAD" not in ids
-    # as_of 없는 기본 검색에서는 (버전 필터가 개입하지 않으므로) 여전히 검색된다
+    # 기본 검색도 'as_of=오늘'과 동치라(v9) 시행일 해석 불가 청크는 동일하게
+    # fail-closed 제외된다 — 실코퍼스에서는 preflight 가 시행일 유효성을 기동
+    # 전에 보증하므로, 이 경로는 데이터 결함이 게이트를 뚫었을 때 그 문서가
+    # '현행'으로 나가는 것을 막는 마지막 방어다.
     res_all = r.retrieve("심사 기간", top_k=5, rerank_n=5)
-    assert "BAD" in {s.chunk.doc_id for s in res_all}
+    ids_all = {s.chunk.doc_id for s in res_all}
+    assert "OK" in ids_all and "BAD" not in ids_all
+
+
+def test_default_search_equals_as_of_today():
+    """기본 검색(무 as_of)은 'as_of=오늘'과 동치다(v9).
+
+    종전 무 as_of 경로는 status 만 보고 시행일을 안 봐서, (a) 미래 시행일의
+    active 문서가 '현행'으로 반환되고 (b) 그 문서로 대체될 폐지본 — 후속본이
+    아직 시행 전이라 오늘의 실제 현행 — 은 은폐됐다. v8 이 as_of 경로에서
+    봉합한 조합 결함과 동형이 기본 경로에 남아 있던 것. 현 코퍼스(REG-013 의
+    후속본 REG-005 는 이미 시행)에서는 발화하지 않으므로 합성 청크로 고정한다."""
+    from src.rag.chunker import Chunk
+    from src.rag.embedder import get_embedder
+    from src.rag.retriever import HybridRetriever
+    from src.rag.vectorstore import InMemoryVectorStore
+
+    chunks = [
+        # 오늘의 실제 현행: 폐지본이지만 후속본(FUT)이 아직 시행 전
+        Chunk(chunk_id="cur::s0::w0", doc_id="CUR", source="cur.md", title="보고 기한 규정",
+              section="본문", text="[보고 기한 규정 > 본문]\n심사 기간은 60일이다.",
+              effective_date="2020-01-01", status="superseded", superseded_by="FUT"),
+        # 미래 시행 active: 아직 오늘의 현행이 아니다
+        Chunk(chunk_id="fut::s0::w0", doc_id="FUT", source="fut.md", title="보고 기한 규정 개정판",
+              section="본문", text="[보고 기한 규정 개정판 > 본문]\n심사 기간은 30일이다.",
+              effective_date="2100-01-01", status="active"),
+    ]
+    r = HybridRetriever(InMemoryVectorStore(get_embedder("tfidf")))
+    r.index(chunks)
+
+    # (a) 미래 시행 active 는 기본 검색에서 제외 +
+    # (b) 후속본 미시행 구간의 폐지본은 include_superseded=False 여도
+    #     '오늘의 현행'으로 포함
+    ids = {s.chunk.doc_id for s in r.retrieve("심사 기간", top_k=5, rerank_n=5)}
+    assert ids == {"CUR"}, f"기본 검색이 '오늘의 현행'과 다르다: {ids}"
+
+    # (c) 기존 as_of 동작 불변: 구간 판정 [시행일, 후속본 시행일) 그대로
+    assert {s.chunk.doc_id for s in r.retrieve("심사 기간", top_k=5, rerank_n=5,
+                                               as_of="2099-12-31")} == {"CUR"}
+    assert {s.chunk.doc_id for s in r.retrieve("심사 기간", top_k=5, rerank_n=5,
+                                               as_of="2100-01-01")} == {"FUT"}
+    assert r.retrieve("심사 기간", top_k=5, rerank_n=5, as_of="2019-12-31") == []
 
 
 def test_as_of_two_tier_chain_returns_exactly_then_active(tmp_path):

@@ -18,6 +18,8 @@ from __future__ import annotations
 import datetime as _dt
 from dataclasses import dataclass, field
 
+from .redactor import redact
+
 # 중대성(Serious) 기준 — REG-005 §2 의 닫힌 목록을 (기준명, 감지 키워드) 로 코드화.
 # 키워드는 케이스 서술(자유 텍스트)에서 기준 충족을 감지하는 데 쓴다.
 SERIOUSNESS_CRITERIA: dict[str, list[str]] = {
@@ -40,9 +42,18 @@ SERIOUSNESS_CRITERIA: dict[str, list[str]] = {
 # 즉시(지체 없이) 신속보고 대상 기준 — REG-005 §2 표의 '사망·생명위협' 행
 _IMMEDIATE = {"사망", "생명 위협"}
 
-# 예상 여부(expectedness) 감지 — 허가사항(첨부문서)에 이미 기재된 반응인가
+# 예상 여부(expectedness) 감지 — 허가사항(첨부문서)에 이미 기재된 반응인가.
+# unexpected 판정이 expected 매칭보다 우선한다(_detect_expectedness) — "허가사항에
+# 기재되어 있지 않은"은 expected 마커("허가사항에 기재")를 부분 문자열로 포함하므로,
+# 부정형을 unexpected 마커에 두지 않으면 부정문이 expected 로 뒤집힌다(v9).
+# unexpected 오판은 보수(15일 트래킹 유지) 방향이라 과탐이 미탐보다 싸다.
 _EXPECTED_MARKERS = ["허가사항에 기재", "첨부문서에 기재", "알려진 부작용", "예상된"]
-_UNEXPECTED_MARKERS = ["예상치 못한", "예상하지 못한", "허가사항에 없", "알려지지 않은"]
+_UNEXPECTED_MARKERS = [
+    "예상치 못한", "예상하지 못한", "허가사항에 없", "알려지지 않은",
+    # "아닌"은 음절 단위 완성형이라 "아니"의 부분 문자열이 아니다 — 둘 다 필요
+    "기재되어 있지 않", "기재되지 않", "기재돼 있지 않",
+    "알려진 부작용이 아니", "알려진 부작용이 아닌",
+]
 
 
 @dataclass
@@ -103,8 +114,11 @@ def assess_case(case_text: str, awareness_date: str = "") -> TriageResult:
         aware = _dt.date.fromisoformat(awareness_date) if awareness_date else _dt.date.today()
     except ValueError:
         aware = _dt.date.today()
+        # 형식이 틀린 인지일은 임의의 자유 텍스트일 수 있다 — 원문을 그대로
+        # 에코하면 caveat 가 비마스킹 PII 유출 경로가 된다(도구 계층이 as_of·
+        # 필터 에코를 redact 로 감싸는 것과 대칭, v9).
         caveats.append(
-            f"인지일 '{awareness_date}' 이(가) YYYY-MM-DD 형식이 아니어서 "
+            f"인지일 '{redact(awareness_date).text}' 이(가) YYYY-MM-DD 형식이 아니어서 "
             f"오늘({aware.isoformat()}) 기준으로 기한을 계산했습니다. "
             "실제 인지일로 기한 재계산이 필요합니다."
         )

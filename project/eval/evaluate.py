@@ -24,12 +24,27 @@ def _load_qa(dataset: str = "qa_dataset.json") -> list[dict]:
     return [x for x in json.loads(path.read_text(encoding="utf-8"))["items"]]
 
 
-def _hit_rank(retrieved_doc_ids: list[str], gold: str) -> int:
-    """정답 문서의 순위(1-based). 없으면 0."""
+def _hit_rank(retrieved_doc_ids: list[str], gold: str | list[str]) -> int:
+    """정답 문서의 순위(1-based). 없으면 0.
+
+    gold 는 단일 doc_id(str) 또는 동등 정답 집합(list) — 복수 정답 문항
+    (accept_doc_ids)은 집합 멤버십으로 판정한다(v9). 코퍼스에 같은 답이
+    두 문서에 실재하는 라벨 모호성은 검색기 결함이 아니라 라벨 결함이므로,
+    문항 교체가 아닌 정답 집합 확장으로 교정한다. 단일 str 호출부
+    (eval/sweep.py 등)는 그대로 동작한다.
+    """
+    accepted = {gold} if isinstance(gold, str) else set(gold)
     for i, d in enumerate(retrieved_doc_ids, 1):
-        if d == gold:
+        if d in accepted:
             return i
     return 0
+
+
+def _gold_ids(item: dict) -> str | list[str]:
+    """문항의 정답 라벨 — accept_doc_ids(복수 정답)가 있으면 그것, 없으면
+    기존 단일 relevant_doc_id. ContextRecall 은 keywords 의 컨텍스트 존재
+    판정이라 어느 정답 문서가 회수되든 같은 기준으로 채점된다(별도 분기 불요)."""
+    return item.get("accept_doc_ids") or item["relevant_doc_id"]
 
 
 def _context_recall(context_text: str, keywords: list[str]) -> float:
@@ -77,7 +92,7 @@ def evaluate(
         latencies.append((time.perf_counter() - t0) * 1000.0)  # ms
 
         doc_ids = [s.chunk.doc_id for s in results]
-        rank = _hit_rank(doc_ids, item["relevant_doc_id"])
+        rank = _hit_rank(doc_ids, _gold_ids(item))
         if rank == 1:
             hits1 += 1
         if 1 <= rank <= 3:
@@ -164,9 +179,13 @@ def main() -> None:
     hc, hn = hold["counts"], hold["n"]
     print()
     print("홀드아웃 (튜닝 미사용 문항 — 개발셋 32문항과 분리, 운영 기본 ④):")
-    print(f" - Hit@1        : {hold['Hit@1']}  {fmt_ci(hc['hits1'], hn)}  (n={hn})")
+    # fmt_ci 가 점추정치를 포함하므로 앞에 값을 또 찍지 않는다(중복 인쇄 정리, v9)
+    print(f" - Hit@1        : {fmt_ci(hc['hits1'], hn)}  (n={hn})")
     print(f" - ContextRecall: {hold['ContextRecall']}")
     print("   → 개발셋 1.000과 이 수치의 차이가 '튜닝된 수치'와 '일반화'의 갭이다.")
+    print("     (v9: 종전 0.833 의 유일 실패는 검색 결함이 아니라 복수 정답 문항의")
+    print("      라벨 모호성이었다 — accept_doc_ids 로 정답 집합만 교정, 튜닝 없음.")
+    print("      1.000 이어도 n=6 의 CI 하한이 말하듯 '일반화 보장'이 아니다.)")
 
     # --- 임베딩 provider 비교(pluggable 실증) ---
     print()

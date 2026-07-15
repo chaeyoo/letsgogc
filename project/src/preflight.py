@@ -87,11 +87,15 @@ _GATE_SELF_TESTS: tuple[dict, ...] = (
      "trusted": ["인지일로부터 15일 이내 신속보고"], "expect_ok": False, "axis": "direction_conflicts"},
     {"name": "날짜 방향 한정어·심은 오류", "answer": "2026-07-25 이후에 제출하면 됩니다",
      "trusted": ["보완자료는 2026-07-25까지 제출한다"], "expect_ok": False, "axis": "direction_conflicts"},
+    # 케이스 간섭 케이스는 축(direction_conflicts) 발화만이 아니라 **from_case
+    # 라벨의 생존**도 함께 단언한다(v9) — 축은 살아 있어도 라벨만 죽으면 케이스
+    # 재서술에 '컴플라이언스 오류' 단정 문구가 붙는 오탐 방향으로 조용히
+    # 퇴행하는데, 라벨은 ok 를 바꾸지 않아 다른 어떤 신호도 없다.
     {"name": "케이스 간섭 방향 한정어·심은 오류(2계층)",
      "answer": "15일 이후에 보고하면 됩니다",
      "trusted": ["인지일로부터 15일 이내 신속보고"],
      "user_facts": ["환자가 복용 15일 이후 증상 발생"],
-     "expect_ok": False, "axis": "direction_conflicts"},
+     "expect_ok": False, "axis": "direction_conflicts", "label": "case_origin"},
     {"name": "부분 날짜 표기·심은 오류", "answer": "보고 기한은 7월 30일입니다",
      "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "unsupported"},
     {"name": "부분 날짜 표기·정상", "answer": "보고 기한은 7월 25일입니다",
@@ -137,6 +141,22 @@ _GATE_SELF_TESTS: tuple[dict, ...] = (
     {"name": "전제 에코 라벨", "answer": "30일이 아니라 15일 이내입니다",
      "trusted": ["인지일로부터 15일 이내"], "question": "보고 기한이 30일 맞나요?",
      "expect_ok": False, "axis": "question_origin"},
+    # v9 — 단위 표기 변형('주'+어미 직결): 존재 축이 살아 있어도 "2주간"·
+    # "2주입니다" 표기의 수집이 죽으면(종전 전면 한글 배제 lookahead) 그
+    # 표기로 오는 "15일 → 약 2주간" 환산 위조는 전부 조용히 통과하고, 근거의
+    # "2주간"은 옳은 답변 "2주"에 오탐을 만든다 — 양방향을 함께 태운다.
+    {"name": "단위 표기(주간)·심은 오류", "answer": "보고 기한은 약 2주간입니다",
+     "trusted": ["보고 기한은 15일 이내"], "expect_ok": False, "axis": "unsupported"},
+    {"name": "단위 표기(주간)·정상", "answer": "안정성 시험은 2주 이내에 완료합니다",
+     "trusted": ["안정성 시험은 2주간 이내에 완료한다"], "expect_ok": True},
+    # v9 — 방향 축의 전제 정정: 질문의 틀린 방향 전제를 정정하는 옳은 답변은
+    # 그 전제를 재서술할 수밖에 없다 — 경고는 유지하되(정정인지 왜곡인지
+    # 기계는 모른다) from_question 라벨(question_origin)로 종류가 조정되는지
+    # 확인한다. 완화 라벨이 존재 축에만 배선된 비대칭의 재발 방지 핀.
+    {"name": "방향 전제 정정 라벨", "answer": "아니요, 15일 이후가 아니라 15일 이내입니다",
+     "trusted": ["인지일로부터 15일 이내 신속보고"],
+     "question": "신속보고는 15일 이후에 하면 되나요?",
+     "expect_ok": False, "axis": "direction_conflicts", "label": "question_origin"},
 )
 
 
@@ -177,6 +197,24 @@ def check_corpus(reg_dir: Path | None = None) -> list[str]:
 
     seen_ids: dict[str, str] = {}
     all_ids = {d.metadata.get("doc_id") for d in docs}
+    # 미래 시행일 검사(v9)의 재료 — '아직 시행 전인 현행(active) 문서'는 오늘
+    # 기준 검색에서 제외되는 것이 옳다(기본 검색 = as_of 오늘). 그 문서가
+    # 시행 중인 구판(그 문서를 superseded_by 로 가리키는, 시행일이 지난 폐지본)
+    # 없이 단독 존재하면, 시행일까지 그 주제는 검색에서 **아예 나오지 않는다**
+    # — 스키마는 전부 유효한 채로 주제 하나가 조용히 사라지는 형태라 형식
+    # 검사로는 영원히 통과한다(마감일 전건 과거 감지와 같은 계열: 형식과 값
+    # 타당성은 다른 층이다).
+    today = _dt.date.today()
+    in_force_successor_of: set[str] = set()  # '시행 중 구판'이 가리키는 후속본 doc_id
+    for d in docs:
+        eff_s = str(d.metadata.get("effective_date", ""))
+        by = str(d.metadata.get("superseded_by") or "")
+        if str(d.metadata.get("status", "")) == "superseded" and by and eff_s:
+            try:
+                if _dt.date.fromisoformat(eff_s) <= today:
+                    in_force_successor_of.add(by)
+            except ValueError:
+                pass  # 형식 오류는 별도 검사가 보고한다
     for d in docs:
         meta = d.metadata
         missing = [k for k in _REQUIRED_META if not meta.get(k)]
@@ -193,9 +231,22 @@ def check_corpus(reg_dir: Path | None = None) -> list[str]:
         eff = str(meta.get("effective_date", ""))
         if eff:
             try:
-                _dt.date.fromisoformat(eff)
+                eff_date = _dt.date.fromisoformat(eff)
             except ValueError:
                 problems.append(f"{d.source}: effective_date '{eff}' 가 YYYY-MM-DD 형식이 아님")
+            else:
+                # 미래 시행일 active 문서는 '시행 중인 구판'이 함께 있어야 한다 —
+                # 없으면 시행일까지 이 주제가 오늘 기준 검색에서 통째로 사라진다
+                # (개정 예고본만 넣고 현행본을 빼는 데이터 교체 실수의 형태).
+                if (
+                    eff_date > today
+                    and status != "superseded"
+                    and str(doc_id) not in in_force_successor_of
+                ):
+                    problems.append(
+                        f"{d.source}: 시행일({eff})이 미래인 현행 문서인데 시행 중인 구판이 없다"
+                        " — 시행 전까지 이 주제는 검색에서 나오지 않는다(구판을 함께 두거나 시행일 확인)"
+                    )
         if not d.text.strip():
             problems.append(f"{d.source}: 본문이 비어 있음")
         # 폐지 체인: 폐지본은 후속 문서를 가리켜야 하고, 체인을 따라가면
@@ -361,6 +412,14 @@ def smoke_checks() -> list[str]:
                 f"검증 게이트 자가 테스트 실패[{t['name']}]: 기대 축({t['axis']})이 아닌"
                 f" 다른 축에 걸렸다 — 해당 축의 탐지가 죽었을 수 있음: {s}"
             )
+        elif t.get("label") and not s.get(t["label"]):
+            # 경고 축이 발화해도 함께 붙어야 하는 완화·등급 라벨(from_case 의
+            # case_origin, from_question 의 question_origin)이 죽으면 경고
+            # '종류'가 조용히 퇴행한다 — 라벨은 ok 를 안 바꿔 소리가 없다.
+            problems.append(
+                f"검증 게이트 자가 테스트 실패[{t['name']}]: 경고 축은 발화했으나"
+                f" 기대 라벨({t['label']})이 붙지 않았다 — {s}"
+            )
 
     # (d) PII 마스킹 자가 테스트: 안전장치 자가 검사를 검증 게이트에만 하고
     #     입구 경계(마스킹)에는 안 하는 비대칭이 사각지대였다 — 마스킹이 고장난
@@ -374,16 +433,22 @@ def smoke_checks() -> list[str]:
     #     v8 추가: 호칭 뒤 '조사' 직결("박영희님이" — 괄호·공백 표기만 심으면
     #     한국어에서 가장 흔한 조사 표기의 수집이 죽어도 못 잡는다),
     #     외국인등록번호(성별코드 5~8), en-dash(–) 전화, 띄어 쓴 "환자 번호".
+    #     v9 추가: 첫 글자가 종전 허용 집합 밖인 조사("…님으로부터" — '으로'는
+    #     한국어 최빈 조사 계열인데 룩어헤드 집합이 첫 글자 단위라 통째로
+    #     샜다), 점(.) 구분 주민번호("900101.1234567" — 전화 패턴만 점을
+    #     허용하던 같은 파일 안 구분자 비대칭).
     probe = redact(
         "환자 김철수님(연락처 010-1234-5678, 주민번호 900101-1234567) 케이스. "
         "보호자 전화는 010-9876-5432로, 주민번호는 850505-2345678입니다. "
         "박영희님이 동행했고 외국인등록번호는 900101-5234567, "
-        "연락처 010–2222–3333, 환자 번호: A-1023."
+        "연락처 010–2222–3333, 환자 번호: A-1023. "
+        "이민준님으로부터 문의가 왔고 주민번호는 920202.1234567."
     )
     for planted in (
         "김철수", "010-1234-5678", "900101-1234567",
         "010-9876-5432", "850505-2345678",  # 한글 직결 표기 변형
         "박영희", "900101-5234567", "010–2222–3333", "A-1023",  # v8 표기 변형
+        "이민준", "920202.1234567",  # v9 표기 변형(조사 집합 밖·점 구분자)
     ):
         if planted in probe.text:
             problems.append(f"PII 마스킹 자가 테스트 실패: 심은 개인정보 '{planted}' 가 마스킹되지 않았다")

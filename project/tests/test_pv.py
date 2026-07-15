@@ -267,3 +267,76 @@ def test_route_common_symptom_case_to_triage():
 def test_route_symptom_regulation_question_stays_search():
     """증상 어휘가 있어도 케이스 맥락(_AE_CASE_MARKERS)이 없는 규정 질문은 검색으로 남는다. (v8)"""
     assert _route_intent("두드러기 이상사례 보고 기한은 며칠인가요?") == "search"
+
+
+# ---------------------------------------------------------------------------
+# v9 — 트리아지 부정문·caveat 에코, PII 마스킹 잔여 사각지대 봉합
+# ---------------------------------------------------------------------------
+def test_triage_negated_expectedness_is_unexpected():
+    """"허가사항에 기재되어 있지 않은" 부정문은 unexpected 다. (v9)
+
+    expected 마커("허가사항에 기재")가 부정문의 부분 문자열이라, 부정형이
+    unexpected 마커에 없으면 '기재되지 않았다'는 서술이 정반대(expected)로
+    뒤집힌다 — expectedness 오판은 정기보고 전환 안내(caveat)의 방향을 바꾼다."""
+    t = assess_case("복용 후 입원했고, 허가사항에 기재되어 있지 않은 반응이다")
+    assert t.expectedness == "unexpected"
+    t2 = assess_case("허가사항에 기재되지 않은 발진으로 입원")
+    assert t2.expectedness == "unexpected"
+    # "아닌"은 완성형 음절이라 "아니"의 부분 문자열이 아니다 — 별도 마커 검증
+    t3 = assess_case("알려진 부작용이 아닌 반응으로 입원")
+    assert t3.expectedness == "unexpected"
+    # 긍정문은 여전히 expected (PV-010 라벨과 동일 방향 — 오탐 방지 가드)
+    t4 = assess_case("허가사항에 기재된 알려진 부작용인 설사가 발생해 입원")
+    assert t4.expectedness == "expected"
+
+
+def test_triage_invalid_awareness_date_caveat_masks_pii():
+    """형식 오류 인지일 caveat 가 원문을 비마스킹 에코하지 않는다. (v9)
+
+    awareness_date 는 임의의 자유 텍스트가 들어올 수 있는 입력인데, 형식 오류
+    caveat 의 f-string 에코가 이름·전화번호를 그대로 노출했다 — 도구 계층이
+    as_of·필터 에코를 redact 로 감싸는 방어와 같은 대칭이 caveat 에도 필요하다."""
+    t = assess_case("복용 후 입원", awareness_date="문의는 홍길동님 010-1234-5678")
+    joined = " ".join(t.caveats)
+    assert "홍길동" not in joined and "010-1234-5678" not in joined
+    # 시끄러운 실패 신호 자체는 유지된다(마스킹이 caveat 를 지우면 안 된다)
+    assert any("YYYY-MM-DD" in c and "재계산" in c for c in t.caveats)
+
+
+def test_redact_name_followed_by_any_josa():
+    """호칭 뒤 조사가 허용 집합 밖이어도("~님으로부터"·"~님께서") 마스킹한다. (v9)
+
+    조사는 열린 활용 집합이라 첫 글자 열거([이가은는…])로는 집합 밖 조사마다
+    유출이 재발한다 — 호칭 뒤는 임의 한글을 허용하고 오탐은 스톱리스트로
+    방어하는 설계 반전(마스킹은 과탐이 미탐보다 싸다)."""
+    for probe in [
+        "홍길동님으로부터 문의가 왔습니다", "김철수님하고 통화했습니다",
+        "박영희님처럼 호소했습니다", "이민준님부터 순서대로",
+        "정수아님보다 증상이 심했고", "최지훈님마저 발열이 있었습니다",
+        "오유진님조차 몰랐습니다", "장서준님밖에 없습니다", "한도윤님께서 보고했습니다",
+    ]:
+        r = redact(probe)
+        assert r.counts.get("이름(호칭)") == 1, f"이름 미마스킹(유출): {probe}"
+        assert "[이름]" in r.text
+
+
+def test_redact_skips_frequent_job_titles():
+    """빈출 직함·호칭(교수·박사·원장 등)은 이름으로 오마스킹하지 않는다. (v9)
+
+    "교수님이" → [이름] 오탐은 감사 리포트를 왜곡하고 보고자 직함(자격)
+    정보까지 지운다 — 조사 전면 허용으로 넓어진 매칭 면적만큼 스톱리스트도
+    함께 넓힌다(오탐도 경계 결함으로 센다)."""
+    r = redact("교수님이 문의했고 박사님과 원장님, 실장님, 이사님, 대표님이 검토했습니다")
+    assert not r.redacted
+    assert r.text == "교수님이 문의했고 박사님과 원장님, 실장님, 이사님, 대표님이 검토했습니다"
+
+
+def test_redact_masks_dotted_rrn():
+    """점(.) 구분 주민번호("900101.1234567")도 마스킹한다. (v9)
+
+    전화 패턴은 점 구분 표기를 받는데 주민번호만 [-–] 로 좁혀져 있던 같은
+    파일 안의 구분자 비대칭 — 비대칭은 곧 우회로다(전화·주민번호 구분자
+    대칭화의 완결)."""
+    r = redact("주민번호는 900101.1234567 입니다")
+    assert "900101.1234567" not in r.text
+    assert r.counts.get("주민등록번호") == 1

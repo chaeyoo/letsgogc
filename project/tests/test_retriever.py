@@ -43,6 +43,20 @@ def test_hybrid_and_rerank_return_within_bounds(pipeline):
     assert 0 < len(reranked) <= 3
 
 
+def test_no_signal_query_returns_empty(pipeline):
+    """무신호 계약(v9): 전 후보의 벡터·BM25 원점수가 0이면 빈 결과.
+
+    종전에는 안정 정렬이 '전부 0점'을 코퍼스 첫 문서 순서로 위장해 빈 질의가
+    임의 문서 3청크를 score 0.0 의 검색 결과로 달고 나갔다(가짜 순위) —
+    관련도 신호가 전혀 없으면 결과가 없다고 답하는 것이 맞다."""
+    r = pipeline.retriever
+    assert r.retrieve("", top_k=8, rerank_n=3) == []
+    # 완전 무관 어휘(코퍼스 OOV)도 동일 — 벡터·BM25 모두 0점
+    assert r.retrieve("zxqv wxyj kqzp", top_k=8, rerank_n=3) == []
+    # 유신호 질의는 계속 정상 반환(무신호 판정이 과확장되지 않았는지의 반대면)
+    assert r.retrieve("품목허가 심사 기간", top_k=8, rerank_n=3)
+
+
 def test_rerank_fixes_hard_negative(pipeline):
     """어휘가 겹치는 하드네거티브(GMP 실태조사 REG-011)를 물리치고
     ALCOA 데이터 완전성(REG-003)을 최상위로 올려야 한다."""
