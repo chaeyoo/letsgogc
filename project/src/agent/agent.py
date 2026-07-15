@@ -41,7 +41,13 @@ from ..verify.verifier import verify_answer, warning_text
 #   → SCORE_FLOOR ∈ (0.167, 0.201), COVERAGE_FLOOR ∈ (0.250, 0.314)
 # 리랭커 v3(섹션 타입 prior) 반영 후 재실측(32문항): 페널티는 대조/서두 섹션에만
 # 작용해 경계 분포가 사실상 불변(범위내 최소 0.156/0.227, 범위밖 최대 0.167/0.250)
-# — 문턱 유지. 재보정 절차 자체는 리랭커를 바꿀 때마다 반복한다.
+# — 문턱 유지. 재보정 절차 자체는 리랭커·검색 후보집합을 바꿀 때마다 반복한다.
+# v10 재실측(오늘 2026-07-15): v9 가 기본 검색을 as_of=오늘 동치로 바꿔 후보집합이
+# 벽시계 날짜의 함수가 됐으나, 현행 코퍼스의 전 규정 시행일이 ≤2025-06-15 라
+# 오늘 이후로는 후보집합이 status-only 시절과 동일 — 경계 분포·문턱 불변(재확인).
+# 단 코퍼스에 미래 시행일 규정·새 supersession 이 추가되면 이 고정 상수는 특정
+# 날짜 슬라이스에 보정된 값과 어긋나므로, 그때 재보정한다(preflight 가 미래
+# 시행일 '시행 중 구판 부재'를 기동 전에 잡아 이 결합을 표면화한다).
 SCORE_FLOOR = 0.19       # 최상위 근거 관련도 하한
 COVERAGE_FLOOR = 0.28    # (확장)질의 토큰 커버리지 하한
 
@@ -187,6 +193,24 @@ def _is_contract_error(data: Any) -> bool:
     return isinstance(data, dict) and "error" in data
 
 
+def _has_evidence(data: Any) -> bool:
+    """도구 출력이 '내용 있는 실질 근거'를 담았는가(v10).
+
+    grounded 계산용 — 빈 검색 성공 결과({"results": []})처럼 성공했으나 근거가
+    없는 출력을 배제한다. 검색은 results 가 비지 않았을 때만, 그 밖의 결정론
+    도구(트리아지·초안·마감일·체크리스트)는 출력 dict/list 에 값이 있을 때
+    근거로 센다 — 오프라인 검색 경로가 빈 결과에 grounded=False 로 강등하는
+    것과 대칭. (에러·에러 계약 응답은 상류에서 이미 걸러져 여기 오지 않는다.)
+    """
+    if isinstance(data, dict):
+        if "results" in data:
+            return bool(data["results"])
+        return any(v for v in data.values())
+    if isinstance(data, list):
+        return bool(data)
+    return bool(data)
+
+
 def _finalize(
     result: AgentResult,
     trusted_texts: list[str],
@@ -258,6 +282,14 @@ class RaAgent:
         # 게이트의 버전 축이 이력 턴 동안 통째로 무장해제된다 — 안전장치를
         # 끄는 스위치의 면적은 근거가 성립하는 문서 단위로 좁힌다.
         history_doc_ids: set[str] = set()
+        # 실질 근거 확보 여부(v10) — trusted_texts 가 비었는지가 아니라 '내용 있는
+        # 도구 출력을 받았는가'로 grounded 를 계산한다. 빈 검색 성공 결과
+        # ({"results": []}, as_of 가 전 문서 이전이거나 무신호)는 에러도 에러 계약도
+        # 아니라 stringify 되어 trusted_texts 에 쌓이므로, bool(trusted_texts) 로
+        # grounded 를 내면 citations=[] 인데 grounded=True 인 모순이 나온다 —
+        # v7 이 봉합한 '출처 0건+근거 배지'가 '도구 호출·성공하나 결과 0건' 경로로
+        # 재발한 형태다(오프라인은 빈 검색에 grounded=False 로 강등 — 그 대칭).
+        grounded_evidence = False
         user_facts: list[str] = []      # 도구 출력 속 사용자 사실 에코(case) — 2계층 신뢰 소스
 
         async with Client(mcp) as mcp_client:
@@ -315,7 +347,9 @@ class RaAgent:
                             # 확보되었는가'다. 모델이 도구 없이 답하면 False: 이전에는
                             # dataclass 기본값 True 가 그대로 노출되어, 출처 0건 답변이
                             # 근거 보증 배지를 달고 나갔다(범위의 과확장 — v7 발견).
-                            grounded=bool(trusted_texts),
+                            # v10: bool(trusted_texts) 는 빈 검색 성공 결과에도 True 라
+                            # grounded_evidence(내용 있는 도구 출력 수신)로 대체.
+                            grounded=grounded_evidence,
                         ),
                         trusted_texts,
                         question=_question_context(message, history),
@@ -341,6 +375,8 @@ class RaAgent:
                         stripped, facts = _split_user_facts(data)
                         trusted_texts.append(_stringify(stripped))
                         user_facts.extend(facts)
+                        if _has_evidence(stripped):
+                            grounded_evidence = True
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations" and "results" in data:
                             # 성공한 검색만 집계한다 — 형식 오류로 실패한 as_of

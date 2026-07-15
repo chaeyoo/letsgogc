@@ -100,3 +100,22 @@ def test_hashing_embedder_is_order_invariant():
     e = HashingEmbedder(n_buckets=1)  # 모든 토큰이 한 버킷에 충돌하는 극단 케이스
     e.fit(["tok0 tok1"])
     assert e.embed("tok0 tok1") == e.embed("tok1 tok0")
+
+
+def test_sweep_propagates_accept_doc_ids(pipeline, monkeypatch):
+    """스윕 채점기도 복수 정답 교정(accept_doc_ids)을 전파한다 — evaluate 에만
+    배선하면, 하이퍼파라미터를 흔든 설정에서 동등 정답 문항이 miss 로 갈려
+    라벨 아티팩트가 파라미터 효과로 오귀속된다(v9 패턴4 의 sweep 미전파, v10).
+
+    한 문항의 top1 문서를 primary 라벨에서 빼고 accept 집합에만 넣는다 —
+    단일 라벨(구버전)이면 miss(Hit@1=0), _gold_ids 전파면 hit(Hit@1=1)."""
+    from eval import sweep
+    qa = sweep._load_qa()
+    item = dict(qa[0])
+    res = pipeline.retriever.retrieve(item["question"], top_k=config.RETRIEVE_TOP_K, rerank_n=1)
+    top1 = res[0].chunk.doc_id
+    item["relevant_doc_id"] = "REG-DOES-NOT-EXIST"
+    item["accept_doc_ids"] = ["REG-DOES-NOT-EXIST", top1]
+    monkeypatch.setattr(sweep, "_load_qa", lambda: [item])
+    out = sweep.run_config(pipeline, rerank_n=1)
+    assert out["Hit@1"] == 1.0

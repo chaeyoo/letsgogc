@@ -130,6 +130,23 @@ def test_redact_report_never_contains_original_values():
     assert "9876" not in str(r.summary())  # 요약에는 유형·건수만
 
 
+def test_redact_does_not_mask_role_nouns_with_honorific():
+    """호칭(님/씨)이 붙은 일반 호칭·역할어("아저씨"·"보호자님")는 이름이 아니다. (v10)
+
+    v9 는 이름 정규식의 조사 룩어헤드를 제거(유출 방향 봉합)하고 오탐은
+    스톱리스트로 방어하는데, '보호자'·'아저'가 목록에 없어 [이름]으로
+    과마스킹됐다 — 특히 '보호자'는 보고자 역할 신호를 지워 최소보고요건 ②
+    미탐으로 연쇄된다(교수님 과마스킹과 같은 클래스의 미해결 인스턴스)."""
+    assert redact("아저씨가 이상반응을 신고했다").text == "아저씨가 이상반응을 신고했다"
+    assert redact("보호자님께서 대신 신고하셨다").text == "보호자님께서 대신 신고하셨다"
+    # 진짜 이름은 여전히 마스킹된다(유출 방향 회귀 방지)
+    assert "[이름]" in redact("홍길동님이 부작용을 호소했다").text
+    # '보호자'가 살아 있어 보고자 역할 신호가 downstream 에 남는다
+    from src.pv.report import build_report
+    r = build_report("보호자님께서 45세 남아 환자의 두드러기를 신고. 타이레놀정 복용 후 발생.")
+    assert not any("보고자" in m for m in r.missing)
+
+
 def test_redact_skips_common_titles():
     """'선생님/담당자님' 같은 일반 호칭은 이름으로 오탐하지 않는다."""
     r = redact("선생님, 담당자님께 전달해 주세요")

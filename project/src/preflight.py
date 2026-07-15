@@ -151,12 +151,16 @@ _GATE_SELF_TESTS: tuple[dict, ...] = (
      "trusted": ["안정성 시험은 2주간 이내에 완료한다"], "expect_ok": True},
     # v9 — 방향 축의 전제 정정: 질문의 틀린 방향 전제를 정정하는 옳은 답변은
     # 그 전제를 재서술할 수밖에 없다 — 경고는 유지하되(정정인지 왜곡인지
-    # 기계는 모른다) from_question 라벨(question_origin)로 종류가 조정되는지
-    # 확인한다. 완화 라벨이 존재 축에만 배선된 비대칭의 재발 방지 핀.
+    # 기계는 모른다) 방향 블록의 from_question 문구로 종류가 조정되는지 확인한다.
+    # v10: 방향 클레임은 question_origin(수치·날짜 전제 축)으로 새면 '⚠ 전제
+    # 확인 필요: 수치 …' 로 오분류·이중 경고되므로, 완화가 방향 블록에서
+    # 나오고(전제·방향 문구) 수치 전제 블록으로는 안 새는지를 warn_has/warn_not
+    # 문자열로 함께 태운다(축 × 표기 오분류의 재발 방지 핀).
     {"name": "방향 전제 정정 라벨", "answer": "아니요, 15일 이후가 아니라 15일 이내입니다",
      "trusted": ["인지일로부터 15일 이내 신속보고"],
      "question": "신속보고는 15일 이후에 하면 되나요?",
-     "expect_ok": False, "axis": "direction_conflicts", "label": "question_origin"},
+     "expect_ok": False, "axis": "direction_conflicts",
+     "warn_has": ["전제", "방향"], "warn_not": ["전제 확인 필요: 수치"]},
 )
 
 
@@ -344,7 +348,7 @@ def check_tasks(tasks_file: Path | None = None) -> list[str]:
 def smoke_checks() -> list[str]:
     """실제 파이프라인 canary + 검증 게이트 자가 테스트."""
     from .mcp_server.server import assess_adverse_event, search_regulations
-    from .verify.verifier import verify_answer
+    from .verify.verifier import verify_answer, warning_text
 
     problems: list[str] = []
 
@@ -420,6 +424,23 @@ def smoke_checks() -> list[str]:
                 f"검증 게이트 자가 테스트 실패[{t['name']}]: 경고 축은 발화했으나"
                 f" 기대 라벨({t['label']})이 붙지 않았다 — {s}"
             )
+        # 경고 '문구' 자체의 오분류·이중 경고 감시(v10) — 방향·역할의
+        # from_question 완화가 수치 전제 블록으로 새면 warn_not 이, 방향 블록의
+        # 완화가 죽으면 warn_has 가 잡는다. 축(summary)만으로는 안 보이는 결함.
+        if t.get("warn_has") or t.get("warn_not"):
+            wt = warning_text(v)
+            for sub in t.get("warn_has", []):
+                if sub not in wt:
+                    problems.append(
+                        f"검증 게이트 자가 테스트 실패[{t['name']}]: 경고 문구에"
+                        f" '{sub}' 가 없다(완화·축 문구 퇴행) — {wt!r}"
+                    )
+            for sub in t.get("warn_not", []):
+                if sub in wt:
+                    problems.append(
+                        f"검증 게이트 자가 테스트 실패[{t['name']}]: 경고 문구에"
+                        f" '{sub}' 가 있다(오분류·이중 경고) — {wt!r}"
+                    )
 
     # (d) PII 마스킹 자가 테스트: 안전장치 자가 검사를 검증 게이트에만 하고
     #     입구 경계(마스킹)에는 안 하는 비대칭이 사각지대였다 — 마스킹이 고장난
