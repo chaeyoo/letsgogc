@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config
+from ..observability import flow
 from .chunker import Chunk, chunk_documents
 from .embedder import get_embedder
 from .loader import load_documents
@@ -89,6 +90,12 @@ class RagPipeline:
         # (호출자는 0건을 요청했는데 8건 검색이 도는 조용한 확대).
         top_k = config.RETRIEVE_TOP_K if top_k is None else top_k
         rerank_n = config.RERANK_TOP_N if rerank_n is None else rerank_n
+        flow(
+            "RagPipeline.retrieve()",
+            "2단계 검색 실행 — 하이브리드로 후보 top_k 를 넓게 모은 뒤 리랭커가 rerank_n 으로 좁힌다",
+            top_k=top_k, rerank_n=rerank_n, expand=config.QUERY_EXPANSION,
+            next="HybridRetriever.retrieve() 호출(src/rag/retriever.py) — 버전 필터→벡터+BM25 결합→리랭킹 순으로 진행",
+        )
         results = self.retriever.retrieve(
             query,
             top_k=top_k,

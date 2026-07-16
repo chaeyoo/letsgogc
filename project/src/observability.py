@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Any
 
 from .verify.verifier import WARNING_AXES
 
@@ -20,6 +23,66 @@ if not logger.handlers:
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(_h)
     logger.setLevel(logging.INFO)
+
+
+# ---------------------------------------------------------------------------
+# 학습용 흐름 로그 (flow log)
+# ---------------------------------------------------------------------------
+# UI 에서 질문 하나가 들어왔을 때 '어떤 파일의 어떤 함수를 어떤 순서로 거치는지'
+# 사람이 따라 읽도록 남기는 로그다. span 로그(JSON, 기계 집계용)와 별개로
+# [흐름 NN] 순번 · 파일명 · 함수명 · 이 단계의 목적 · 주요 파라미터를 한 줄에 담는다.
+# FLOW_LOG=0 환경변수로 끈다.
+# 주의: 원문 개인정보를 싣지 않는다 — 메시지 텍스트는 마스킹(redact) '이후'
+# 계층에서만 로그에 올리고, 그 전 계층(API 진입)은 길이만 기록한다.
+FLOW_LOG_ENABLED = os.environ.get("FLOW_LOG", "1") not in ("0", "false", "off")
+_flow_n = 0
+
+
+def flow_reset() -> None:
+    """요청 단위 순번 초기화 — API 진입점(POST /chat)에서 부른다.
+
+    데모는 단일 사용자 전제라 전역 카운터로 충분하다. 동시 요청이 겹치면
+    순번이 섞일 수 있다 — 실무라면 요청별 correlation id 로 대체할 자리.
+    """
+    global _flow_n
+    _flow_n = 0
+
+
+def _flow_val(v: Any) -> str:
+    """파라미터 값을 로그 한 줄에 들어가게 접는다(개행 제거·100자 절단)."""
+    s = v if isinstance(v, str) else repr(v)
+    s = s.replace("\n", " ")
+    return s if len(s) <= 100 else s[:100] + "…"
+
+
+def flow(func: str, purpose: str, **params: Any) -> None:
+    """흐름 로그 한 줄: [흐름 NN] 파일:라인 :: 함수 — 목적 | k=v, ...
+
+    파일 경로와 라인 번호는 호출 지점의 스택 프레임에서 자동으로 얻는다 —
+    수동으로 적으면 코드가 수정되어 줄이 밀릴 때마다 로그가 거짓말을 하게
+    된다(로그의 위치 정보가 틀리면 없는 것보다 나쁘다). 라인 번호는 flow()
+    를 부른 그 줄이므로, 에디터에서 해당 파일:라인으로 점프해 앞뒤 코드를
+    읽으면 그 단계가 코드 어디인지 바로 찾아진다.
+    """
+    global _flow_n
+    if not FLOW_LOG_ENABLED:
+        return
+    _flow_n += 1
+    fr = sys._getframe(1)  # 호출자 프레임 — 파일 경로·라인 번호의 출처
+    path = fr.f_code.co_filename
+    i = path.rfind("/src/")  # 절대경로를 프로젝트 상대경로(src/…)로 접는다
+    loc = f"{path[i + 1:] if i != -1 else os.path.basename(path)}:{fr.f_lineno}"
+    # next= 는 '왜 다음 호출이 일어나는가'의 인과 설명 — 데이터 값과 달리
+    # 잘리면 의미가 깨지므로 절단 없이 맨 뒤에 화살표로 구분해 붙인다.
+    nxt = params.pop("next", None)
+    tail = (
+        " | " + ", ".join(f"{k}={_flow_val(v)}" for k, v in params.items())
+        if params
+        else ""
+    )
+    if nxt:
+        tail += f"  ▶ 다음: {nxt}"
+    logger.info(f"[흐름 {_flow_n:02d}] {loc} :: {func} — {purpose}{tail}")
 
 
 @dataclass

@@ -25,6 +25,7 @@ import datetime as _dt
 from fastmcp import FastMCP
 
 from .. import config
+from ..observability import flow
 from ..rag.pipeline import RagPipeline
 
 mcp = FastMCP("RAPV-Assistant")
@@ -104,11 +105,25 @@ def search_regulations(
                 "error": f"as_of '{redact(as_of).text}' 가 YYYY-MM-DD 형식이 아님",
                 "expected": "YYYY-MM-DD",
             }
+    flow(
+        "search_regulations()",
+        "규제문서 RAG 검색 — 동의어 확장 → 하이브리드(벡터+BM25) 1차 회수 → 리랭킹 상위 N",
+        query=query, top_n=top_n, as_of=as_of or "(현행)",
+        include_superseded=include_superseded,
+        next="RagPipeline.retrieve() 호출 — 부팅 시 만든 인덱스에서 실제 검색을 수행",
+    )
     ctx = _get_pipeline().retrieve(
         query,
         rerank_n=max(1, min(top_n, 5)),
         as_of=as_of,
         include_superseded=include_superseded,
+    )
+    flow(
+        "search_regulations()",
+        "검색 완료 — 근거 문단+출처 메타(문서·섹션·버전·시행일)를 반환(답변의 근거 추적용)",
+        results=len(ctx.chunks),
+        top=f"{ctx.chunks[0].chunk.doc_id} {ctx.chunks[0].chunk.section} ({round(ctx.chunks[0].score, 4)})" if ctx.chunks else "(없음)",
+        next="호출자에게 dict 반환 — 에이전트라면 신뢰 소스·출처로 축적, 도구 내부 호출(basis)이라면 판정 근거로 부착",
     )
     return {
         "query": query,
@@ -153,6 +168,12 @@ def get_ra_deadlines(within_days: int = 30, task_type: str = "") -> dict:
     # 개인정보가 들어오면 에코 경로로 노출된다(마스킹해도 매칭 의미는 불변:
     # 유효한 유형명에는 PII 패턴이 없다).
     task_type = redact(task_type).text if task_type else task_type
+    flow(
+        "get_ra_deadlines()",
+        "RA 마감일 조회 — data/ra_tasks.json 에서 오늘 기준 임박 항목을 마감일 순으로(순수 함수 위임)",
+        within_days=within_days, task_type=task_type or "(전체)",
+        next="src/ra/tasks.py deadlines_within() 호출 — 검색(RAG)이 아닌 결정론 조회라 파이프라인을 안 거친다",
+    )
     # 조회 로직은 src/ra/tasks.py 의 순수 함수에 위임한다 — PV 도구가 src/pv/
     # 에 위임하는 것과 대칭인 RA 갈래. 이 계층은 인자 마스킹과 MCP 노출만 담당.
     return deadlines_within(within_days=within_days, task_type=task_type)
@@ -174,6 +195,12 @@ def get_submission_checklist(category: str) -> dict:
     from ..ra.tasks import submission_checklist
 
     category = redact(category).text if category else category  # 에러 에코 경로 방어(위와 동일)
+    flow(
+        "get_submission_checklist()",
+        "제출 체크리스트 조회 — 카테고리별 준비 항목(미지원 카테고리는 error+available 계약)",
+        category=category,
+        next="src/ra/tasks.py submission_checklist() 호출 — 미지원 카테고리면 에러 계약이 반환돼 호출자가 폴백/재시도",
+    )
     return submission_checklist(category)  # 조회 로직은 src/ra/ 위임(위와 동일한 대칭)
 
 
@@ -208,6 +235,12 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
     from ..pv.triage import assess_case
 
     masked = redact(case_description)  # 심층방어: 도구 단독 사용(stdio) 시에도 PII 비노출
+    flow(
+        "assess_adverse_event()",
+        "PV 트리아지 — 규칙 기반(결정론)으로 중대성 판정·보고기한 계산 + 인과성 제안·용어 코딩",
+        awareness_date=awareness_date or "(미지정→오늘)", case=masked.text,
+        next="src/pv/ 규칙 모듈 순차 실행(triage→causality→coding) 후 근거 규정 회수를 위해 search_regulations 중첩 호출",
+    )
     t = assess_case(masked.text, awareness_date)
     c = assess_causality(masked.text)
     coded = code_terms(masked.text)
@@ -215,6 +248,12 @@ def assess_adverse_event(case_description: str, awareness_date: str = "") -> dic
     uncoded = flag_uncoded_expressions(masked.text, coded, candidates)
     # 판정 근거 규정 문단을 RAG로 회수해 부착(추적성) — 보고기한의 출처는 REG-005
     basis = search_regulations("중대한 이상사례 보고 기한 신속보고", top_n=2)
+    flow(
+        "assess_adverse_event()",
+        "트리아지 완료 — 판정 결과에 근거 규정(basis)을 붙여 반환(모든 판정은 사람이 최종 확정)",
+        is_serious=t.is_serious, deadline_date=t.deadline_date, route=t.route,
+        next="호출자(에이전트)로 dict 반환 — basis 는 출처로, deadline_date 등 계산값은 검증 신뢰 소스로 쓰인다",
+    )
     return {
         "case": masked.text,
         "pii_masked": masked.summary(),
@@ -298,6 +337,12 @@ def draft_ae_report(
         awareness_date=awareness_date,
     )
     basis = search_regulations("중대한 이상사례 보고 기한 신속보고 인과성 평가", top_n=2)
+    flow(
+        "draft_ae_report()",
+        "ICSR 초안 작성 완료 — 최소보고요건(ICH E2D 4요소) 검증→트리아지→인과성→코딩→초안 조립(전부 규칙 기반)",
+        reportable=r.reportable, missing=r.missing, deadline_date=r.triage.deadline_date,
+        next="호출자(에이전트)로 dict 반환 — missing 이 있으면 답변에 보완 안내(followups)가 붙는다",
+    )
     return {
         "reportable": r.reportable,
         "missing": r.missing,

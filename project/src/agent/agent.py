@@ -21,7 +21,7 @@ from fastmcp import Client
 
 from .. import config
 from ..mcp_server.server import mcp
-from ..observability import Trace, record_verification, timed
+from ..observability import Trace, flow, record_verification, timed
 from ..pv.coding import symptom_keywords
 from ..pv.redactor import redact
 from ..rag.synonyms import expand_query
@@ -239,6 +239,17 @@ def _finalize(
         allowed_superseded_ids=allowed_superseded_ids,
         user_fact_texts=user_facts,
     )
+    flow(
+        "_finalize()",
+        "사후 검증 게이트 — 답변 속 수치·날짜·방향·인용 버전을 신뢰 소스(도구 출력)와 대조. "
+        "실패해도 차단하지 않고 경고를 부착(최종 확정은 사람)",
+        ok=v.ok, summary=v.summary(),
+        next=(
+            "record_verification() 집계 후 API 계층으로 반환 — 검증 통과라 답변 원문 그대로"
+            if v.ok
+            else "warning_text() 를 답변 끝에 부착 후 반환 — 검증 경고가 있으므로(시끄러운 실패)"
+        ),
+    )
     if not v.ok:
         result.answer = f"{result.answer}\n\n{warning_text(v)}"
     result.verification = v.summary()
@@ -258,6 +269,22 @@ class RaAgent:
         red = redact(message)
         message = red.text
         history = _redact_history(history)  # 클라이언트가 보낸 이전 턴에도 PII가 있을 수 있다
+        flow(
+            "RaAgent.chat()",
+            "에이전트 입구 PII 마스킹 — 이후 모든 경로(LLM API·검색·로그)에는 마스킹본만 흐른다",
+            masked=red.summary(), message=message,
+            next="모드 분기 — 마스킹은 무조건 거치는 공통 전처리, 다음 줄에서 경로가 갈린다",
+        )
+        flow(
+            "RaAgent.chat()",
+            "모드 분기 — ANTHROPIC_API_KEY 유무로 결정(llm: Claude tool-use 루프 / offline: 규칙 라우터)",
+            mode="llm" if config.LLM_AVAILABLE else "offline",
+            next=(
+                "_chat_llm() 호출 — API 키가 있으므로 Claude 가 스스로 도구를 선택한다"
+                if config.LLM_AVAILABLE
+                else "_chat_offline() 호출 — API 키가 없으므로 키워드 규칙 라우터가 도구를 선택한다"
+            ),
+        )
         with timed(trace, "chat", "agent", {"mode": "llm" if config.LLM_AVAILABLE else "offline"}):
             if config.LLM_AVAILABLE:
                 result = await self._chat_llm(message, history, trace)
@@ -272,32 +299,60 @@ class RaAgent:
     async def _chat_llm(self, message: str, history: list[dict], trace: Trace) -> AgentResult:
         import anthropic
 
+        # ── 이 함수의 뼈대 ────────────────────────────────────────────
+        # "Claude 에게 물어본다 → Claude 가 '도구를 불러 달라'고 하면 대신
+        # 실행해 결과를 돌려준다 → Claude 가 '답변을 확정하겠다'고 할 때까지
+        # 반복한다." 나머지 코드는 이 반복을 안전하게 만드는 장치다.
+        #
+        # 아래 변수들은 루프가 도는 동안 '증거'를 쌓아 두는 바구니다 —
+        # 생성 답변은 매번 다르므로, 마지막 _finalize() 검증에서 답변 속
+        # 수치·날짜가 진짜 도구 출력에 있던 값인지 대조하려면
+        # '이번 턴에 도구가 실제로 반환한 것'을 따로 모아 둬야 한다.
         client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-        tool_calls: list[ToolCall] = []
-        raw_search_results: list[dict] = []
-        trusted_texts: list[str] = []   # 사후 검증의 신뢰 소스(성공한 도구 출력 전체)
-        # 이력(as_of·include_superseded) 검색이 '실제로 반환한' 문서 집합 —
-        # 이 문서들의 폐지본 인용만 경고에서 면제한다. 전역 bool 로 켜면 같은
-        # 턴의 현행 검색에 (상류 결함으로) 섞여 든 폐지본 인용까지 경고가 꺼져,
-        # 게이트의 버전 축이 이력 턴 동안 통째로 무장해제된다 — 안전장치를
-        # 끄는 스위치의 면적은 근거가 성립하는 문서 단위로 좁힌다.
+        tool_calls: list[ToolCall] = []       # UI 표시용: 어떤 도구를 어떤 인자로 불렀나
+        raw_search_results: list[dict] = []   # 출처(citations) 카드의 재료
+        trusted_texts: list[str] = []   # 검증의 '신뢰 소스' — 성공한 도구 출력(입력 에코 제외)
+        # 이력(as_of·include_superseded) 검색이 '실제로 반환한' 문서 집합.
+        # 이 문서들의 폐지본 인용만 검증 경고에서 면제한다 — 전역 on/off 로
+        # 켜면 같은 턴의 현행 검색에 섞여 든 폐지본 인용까지 경고가 꺼지므로,
+        # 안전장치를 끄는 범위는 '근거가 성립하는 문서 단위'로 좁힌다.
         history_doc_ids: set[str] = set()
-        # 실질 근거 확보 여부(v10) — trusted_texts 가 비었는지가 아니라 '내용 있는
-        # 도구 출력을 받았는가'로 grounded 를 계산한다. 빈 검색 성공 결과
-        # ({"results": []}, as_of 가 전 문서 이전이거나 무신호)는 에러도 에러 계약도
-        # 아니라 stringify 되어 trusted_texts 에 쌓이므로, bool(trusted_texts) 로
-        # grounded 를 내면 citations=[] 인데 grounded=True 인 모순이 나온다 —
-        # v7 이 봉합한 '출처 0건+근거 배지'가 '도구 호출·성공하나 결과 0건' 경로로
-        # 재발한 형태다(오프라인은 빈 검색에 grounded=False 로 강등 — 그 대칭).
+        # '내용 있는 도구 결과를 받은 적이 있는가' — 최종 grounded 배지의 근거.
+        # bool(trusted_texts) 로 판정하면 안 된다: 검색이 성공했지만 결과 0건
+        # ({"results": []})인 출력도 trusted_texts 에는 쌓이므로, 출처가 0건인데
+        # grounded=True 인 모순이 생긴다(오프라인 모드가 빈 검색을
+        # grounded=False 로 강등하는 것과 대칭 — v10).
         grounded_evidence = False
-        user_facts: list[str] = []      # 도구 출력 속 사용자 사실 에코(case) — 2계층 신뢰 소스
+        user_facts: list[str] = []      # 도구 출력 속 '사용자가 서술한 사실'(case 에코) — 별도 계층
 
+        # MCP 서버에 연결한다 — 인자가 URL·실행 명령이 아니라 서버 '객체'(mcp)
+        # 라서 fastmcp 가 인메모리 transport 를 쓴다: 별도 프로세스·네트워크 없이
+        # 같은 프로세스 안에서 통신하되, 오가는 메시지(list_tools/call_tool)는
+        # 실제 MCP 규격 그대로다 — transport 만 바꾸면 원격 서버로 교체 가능.
         async with Client(mcp) as mcp_client:
+            # 도구 6종의 이름·설명(docstring)·입력 스키마를 Anthropic tools
+            # 포맷으로 변환. 이 '설명'이 Claude 가 어떤 도구를 쓸지 판단하는
+            # 유일한 근거다.
             tools = _to_anthropic_tools(await mcp_client.list_tools())
+            flow(
+                "_chat_llm()",
+                "MCP 인메모리 연결·도구 목록 확보 — 이 이름·설명(docstring)이 Claude 의 도구 선택 근거",
+                tools=[t["name"] for t in tools],
+                next="step 0 LLM 호출 — 이 도구 목록을 tools= 로 실어 Claude 에게 보낸다",
+            )
+            # Claude 와의 왕복 대화록 — 루프를 돌며 도구 결과가 계속 덧붙는다.
             messages: list[dict] = [*history, {"role": "user", "content": message}]
 
-            # 에이전트 루프 (최대 6스텝 — 무한루프 방지)
+            # 에이전트 루프: 한 바퀴 = Claude API 호출 1번. Claude 의 응답은
+            # 둘 중 하나다 — "도구를 불러 달라"(stop_reason == "tool_use") 또는
+            # "답변을 확정하겠다"(그 외). 6은 도구 왕복 허용 상한(무한루프 방지).
             for step in range(6):
+                flow(
+                    "_chat_llm()",
+                    f"LLM 호출(step {step}) — 대화록+도구 목록을 Claude 에 보내 '도구 요청 or 답변 확정'을 묻는다",
+                    model=config.LLM_MODEL, messages=len(messages),
+                    next="응답의 stop_reason 으로 분기 — 'tool_use' 면 도구 실행, 그 외면 답변 확정",
+                )
                 try:
                     with timed(trace, f"llm.step{step}", "llm", {"model": config.LLM_MODEL}):
                         resp = await client.messages.create(
@@ -308,12 +363,18 @@ class RaAgent:
                             messages=messages,
                         )
                 except Exception as e:  # noqa: BLE001 - 외부 API 실패는 명시적 안내로 흡수
-                    # 잘못된 키(401)·네트워크 오류·존재하지 않는 모델명은 가장 흔한
-                    # 온보딩 실패 경로다 — 예외를 그대로 전파하면 HTTP 500 이라는
-                    # 불투명한 실패가 된다(조용하진 않지만 원인을 말해주지 않는다).
-                    # 명시적 안내로 답한다. 예외 '메시지'는 답변에 싣지 않는다 —
-                    # 외부 라이브러리 에러 문구에는 요청 정보가 에코될 수 있다
-                    # (에러 계약 응답을 신뢰 소스에서 빼는 것과 같은 계열의 규율).
+                    # API 호출 실패(잘못된 키·네트워크 오류·틀린 모델명)는 크래시
+                    # 대신 '무엇을 확인하라'는 안내문을 답변으로 반환한다 —
+                    # 예외를 그대로 전파하면 사용자에게는 원인 불명의 HTTP 500 이
+                    # 된다. 예외 '타입명'만 싣고 메시지 원문은 싣지 않는다:
+                    # 외부 라이브러리 에러 문구에는 요청 내용이 에코될 수 있다
+                    # (에러 계약 응답을 신뢰 소스에서 빼는 것과 같은 규율).
+                    flow(
+                        "_chat_llm()",
+                        "LLM API 호출 실패 — 크래시(HTTP 500) 대신 확인 안내문으로 응답(원인 타입만 노출)",
+                        error=type(e).__name__,
+                        next="_finalize() — 실패 안내문도 검증 게이트는 통과시켜 반환한다",
+                    )
                     return _finalize(
                         AgentResult(
                             answer=(
@@ -331,10 +392,20 @@ class RaAgent:
                         allowed_superseded_ids=history_doc_ids,
                         user_facts=user_facts,
                     )
+                # Claude 가 도구 요청 없이 답변을 확정한 경우 — 루프의 정상 출구.
+                # 텍스트 블록을 이어 붙여 최종 답변으로 확정하고, 사후 검증
+                # 게이트(_finalize)를 거쳐 반환하면 이 함수 전체가 끝난다.
                 if resp.stop_reason != "tool_use":
                     text = "".join(
                         b.text for b in resp.content if b.type == "text"
                     ).strip()
+                    flow(
+                        "_chat_llm()",
+                        "Claude 가 답변 확정(stop_reason≠tool_use) — 루프의 정상 출구, 사후 검증 게이트로",
+                        stop_reason=resp.stop_reason, answer_len=len(text),
+                        grounded=grounded_evidence,
+                        next="_finalize() — stop_reason 이 tool_use 가 아니므로 루프를 끝내고 이 답변을 검증한다",
+                    )
                     # 생성 답변은 매번 다르므로 평가셋이 아니라 '이 답변'을 검증한다
                     return _finalize(
                         AgentResult(
@@ -342,13 +413,11 @@ class RaAgent:
                             mode="llm",
                             tool_calls=tool_calls,
                             citations=_collect_citations(tool_calls, raw_search_results),
-                            # LLM 모드에는 문턱 기반 abstention 이 없다(오프라인 검색
-                            # 경로 전용) — grounded 는 '성공한 도구 출력이 신뢰 소스로
-                            # 확보되었는가'다. 모델이 도구 없이 답하면 False: 이전에는
-                            # dataclass 기본값 True 가 그대로 노출되어, 출처 0건 답변이
-                            # 근거 보증 배지를 달고 나갔다(범위의 과확장 — v7 발견).
-                            # v10: bool(trusted_texts) 는 빈 검색 성공 결과에도 True 라
-                            # grounded_evidence(내용 있는 도구 출력 수신)로 대체.
+                            # grounded = '내용 있는 도구 출력을 받은 적 있는가'.
+                            # Claude 가 도구를 한 번도 안 부르고 답하면 False —
+                            # 근거 보증이 없다는 표시다(과거에는 dataclass 기본값
+                            # True 가 그대로 노출되어 출처 0건 답변이 근거 배지를
+                            # 달고 나갔다 — v7 발견, v10 에서 '빈 검색 성공'까지 보강).
                             grounded=grounded_evidence,
                         ),
                         trusted_texts,
@@ -357,40 +426,60 @@ class RaAgent:
                         user_facts=user_facts,
                     )
 
-                # 도구 호출 실행
-                messages.append({"role": "assistant", "content": resp.content})
+                # ── Claude 가 "이 도구를 이 인자로 불러 달라"고 요청한 경우 ──
+                # Claude 는 도구를 직접 실행하지 못한다: 요청(tool_use 블록)만
+                # 보내고, 실행은 여기서 대신한 뒤 결과를 대화에 붙여 돌려준다.
+                messages.append({"role": "assistant", "content": resp.content})  # 도구 요청도 대화록에 남긴다
                 tool_results_content = []
                 for block in resp.content:
                     if block.type != "tool_use":
                         continue
+                    flow(
+                        "_chat_llm()",
+                        "Claude 의 도구 실행 요청 — Claude 는 요청만 보내고, 실행은 MCP 를 통해 여기서 대신한다",
+                        tool=block.name, args=dict(block.input),
+                        next=f"src/mcp_server/server.py 의 {block.name}() 실행 — stop_reason=tool_use 였고 "
+                             "Claude 가 도구 설명(docstring)을 근거로 이 도구를 골랐기 때문",
+                    )
                     data, is_error = await self._safe_tool_call(
                         mcp_client, block.name, dict(block.input), trace
                     )
+                    flow(
+                        "_chat_llm()",
+                        "도구 실행 완료 — 성공 출력은 검증용 신뢰 소스(trusted_texts)에 축적",
+                        tool=block.name, error=is_error,
+                        result=("오류: " + str(data)) if is_error else _summarize(data),
+                        next="결과를 tool_result 블록으로 포장 — 실패였다면 에러 그대로 되먹여 Claude 가 자가 정정",
+                    )
                     if not is_error and not _is_contract_error(data):
-                        # 도구 출력 = 검증 신뢰 소스. 단 입력 에코(query·as_of)와
-                        # 에러 계약 응답은 제외 — 사용자 전제가 신뢰 소스로
-                        # 승격되는 구멍을 막는다(에러 문구 속 에코 포함).
-                        # 케이스 에코(case)는 별도 계층으로 분리 — 지지 근거로는
-                        # 인정하되 from_case 라벨이 붙는다(사용자 서술의 승격 가시화).
+                        # 성공한 도구 출력만 검증의 신뢰 소스로 쌓는다. 단:
+                        # - 입력 에코(query·as_of)는 버린다 — 사용자가 틀린 값을
+                        #   전제로 물으면 그 값이 도구 출력에 메아리치는데, 이를
+                        #   신뢰 소스에 넣으면 모델이 맞장구친 오답도 검증을
+                        #   통과해 버린다.
+                        # - {"error": ...} 계약 응답은 통째로 제외 — 에러 문구
+                        #   '안'에도 사용자 입력이 에코된다.
+                        # - 케이스 서술 에코(case)는 별도 바구니(user_facts)로 —
+                        #   지지 근거로는 인정하되 from_case 라벨이 붙는다.
                         stripped, facts = _split_user_facts(data)
                         trusted_texts.append(_stringify(stripped))
                         user_facts.extend(facts)
-                        if _has_evidence(stripped):
+                        if _has_evidence(stripped):  # 결과 0건짜리 '성공'은 근거로 안 친다
                             grounded_evidence = True
+                    # 출처(citations) 수집 — UI 출처 카드와 폐지본 인용 검증의 재료.
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations" and "results" in data:
-                            # 성공한 검색만 집계한다 — 형식 오류로 실패한 as_of
-                            # 호출이 허용 집합을 채우면, 시점 검색이 한 번도
-                            # 성공하지 않았는데 폐지본 인용 경고만 꺼진다.
                             raw_search_results.append(data)
                             if block.input.get("include_superseded") or block.input.get("as_of"):
-                                # 이력 조회 의도 — 단, 이 검색이 '실제로 반환한'
-                                # 문서의 폐지본 인용만 결함이 아니다(문서 단위 허용).
+                                # 이력 조회 검색이 '실제로 반환한' 문서만 폐지본
+                                # 인용 경고에서 면제한다(문서 단위 허용). 실패한
+                                # as_of 호출까지 집계하면, 시점 검색이 한 번도
+                                # 성공하지 않았는데 경고만 꺼진다.
                                 history_doc_ids |= {
                                     r["doc_id"] for r in data["results"] if r.get("doc_id")
                                 }
                         elif block.name in ("assess_adverse_event", "draft_ae_report") and data.get("basis"):
-                            raw_search_results.append(data["basis"])  # 트리아지/초안 근거 규정도 출처로
+                            raw_search_results.append(data["basis"])  # 트리아지/초안의 근거 규정도 출처로
                     tool_calls.append(
                         ToolCall(
                             name=block.name,
@@ -398,19 +487,29 @@ class RaAgent:
                             result_summary=("오류: " + str(data)) if is_error else _summarize(data),
                         )
                     )
+                    # 도구 결과를 tool_result 블록으로 만들어 Claude 에게 돌려줄 준비.
                     tool_results_content.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.id,
                             "content": _stringify(data),
-                            # 도구가 실패해도 크래시 대신 에러를 모델에 되먹여
-                            # 스스로 복구(다른 도구/인자로 재시도)하게 한다.
+                            # 실패도 그대로 되먹인다 — Claude 가 에러를 보고
+                            # 스스로 인자를 고치거나 다른 도구로 재시도하게 한다.
                             "is_error": is_error,
                         }
                     )
+                # 결과를 대화록에 붙이고 루프 선두로 — 다음 messages.create() 에서
+                # Claude 는 이 결과를 '관찰'한 상태로 추가 도구 호출 또는 답변
+                # 확정을 판단한다.
                 messages.append({"role": "user", "content": tool_results_content})
+                flow(
+                    "_chat_llm()",
+                    "도구 결과를 tool_result 블록으로 대화록에 되먹임 — 다음 step 에서 Claude 가 '관찰'한다",
+                    tool_results=len(tool_results_content), trusted_texts=len(trusted_texts),
+                    next=f"step {step + 1} LLM 재호출 — 커진 대화록을 보고 Claude 가 '추가 도구 or 답변 확정'을 다시 판단",
+                )
 
-            # 루프 한계 도달
+            # 6바퀴를 다 썼는데도 도구 호출만 반복된 경우 — 답변 확정 실패 안내로 마감.
             return _finalize(
                 AgentResult(
                     answer="(도구 호출이 반복되어 응답을 확정하지 못했습니다. 질문을 좁혀 다시 시도해 주세요.)",
@@ -444,6 +543,12 @@ class RaAgent:
         resolved = _resolve_followup(message, history)
         async with Client(mcp) as mcp_client:
             intent = _route_intent(resolved)
+            flow(
+                "_chat_offline()",
+                "오프라인 규칙 라우팅 — LLM 대신 키워드 규칙으로 의도를 분류해 MCP 도구를 선택",
+                intent=intent, resolved=resolved,
+                next=_INTENT_NEXT[intent],
+            )
 
             if intent == "ae_report":
                 # 케이스 서술 + '보고서 작성' 요청 → ICSR 초안 도구(트리아지+인과성+코딩+최소요건)
@@ -745,6 +850,18 @@ def _extract_awareness_date(message: str) -> str:
     """
     m = _AWARENESS_RE.search(message)
     return m.group(1) if m else ""
+
+
+# 흐름 로그의 next= 안내문 — 라우팅 결과(intent)가 왜 그 도구 호출로 이어지는지.
+# 판정 규칙 자체는 _route_intent 에 있다(여기는 로그 문구만 — 규칙과 문구를
+# 이중 유지하지 않도록 '어떤 어휘 계열이 신호였는지' 수준으로만 적는다).
+_INTENT_NEXT = {
+    "ae_report": "draft_ae_report 호출 — 케이스 서술(환자/복용)+사건 어휘에 더해 '보고서/초안' 요청 어휘가 있어서",
+    "ae_triage": "assess_adverse_event 호출 — 케이스 서술(환자/복용)+사건 어휘(입원·쇼크 등)가 함께 감지되어서",
+    "deadlines": "get_ra_deadlines 호출 — '마감/일정/디데이' 등 업무 일정 어휘가 감지되어서",
+    "checklist": "get_submission_checklist 호출 — '체크리스트/구비서류' 등 준비물 어휘가 감지되어서",
+    "search": "search_regulations 호출 — 특정 도구 신호가 없어 기본 경로(규정 검색)로",
+}
 
 
 def _route_intent(message: str) -> str:

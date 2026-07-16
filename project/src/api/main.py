@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from .. import config
 from ..agent.agent import RaAgent
 from ..mcp_server.server import _get_pipeline
-from ..observability import gate_stats
+from ..observability import flow, flow_reset, gate_stats
 from ..ra.tasks import load_ra_tasks
 
 agent = RaAgent()
@@ -82,7 +82,20 @@ async def health() -> JSONResponse:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
+    flow_reset()
+    flow(
+        "chat()",
+        "HTTP 진입점 — UI(web/index.html)의 POST /chat 수신. 원문은 아직 마스킹 전이라 길이만 기록",
+        message_len=len(req.message), history_turns=len(req.history),
+        next="agent.chat() 호출 — 모든 요청은 에이전트 단일 진입점(RaAgent)으로 위임",
+    )
     result = await agent.chat(req.message, req.history)
+    flow(
+        "chat()",
+        "응답 직렬화 — AgentResult 를 ChatResponse(JSON)로 바꿔 UI 에 반환(여기서 요청 끝)",
+        mode=result.mode, grounded=result.grounded,
+        citations=len(result.citations), latency_ms=result.latency_ms,
+    )
     return ChatResponse(
         answer=result.answer,
         mode=result.mode,
