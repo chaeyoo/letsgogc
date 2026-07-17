@@ -4,96 +4,147 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>RAPV-Assistant · 제약 규제업무(RA·PV) AI 어시스턴트</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M9 3h6v6h6v6h-6v6H9v-6H3V9h6z' fill='%23E4002B'/%3E%3Cpath d='M17 11h6v6h6v6h-6v6h-6v-6h-6v-6h6z' fill='%2343B02A'/%3E%3C/svg%3E" />
 <style>
+  /* GC녹십자 공식 CI 팔레트 (gcbiopharma.com CI) */
   :root {
-    --bg: #0f1720; --panel: #16212e; --panel2: #1c2937; --line: #26374a;
-    --text: #e6edf3; --muted: #8aa0b4; --accent: #33c3a6; --accent2: #4f9dff;
-    --user: #234a63; --warn: #e0a458;
+    --gc-blue: #002B49;      /* GC Deep Blue */
+    --gc-mildblue: #0072CE;  /* GC Mild Blue */
+    --gc-green: #007A33;     /* GC Deep Green */
+    --gc-mildgreen: #43B02A; /* GC Mild Green */
+    --gc-bright: #97D700;    /* GC Bright Green */
+    --gc-red: #E4002B;       /* GC Red */
+    --gc-yellow: #FFC845;    /* GC Yellow */
+    --bg: #f4f7f9; --panel: #ffffff; --panel2: #eef3f6; --line: #dde5ec;
+    --text: #1b2a38; --muted: #5b7186;
+    --user: var(--gc-blue); --accent: var(--gc-green); --accent2: var(--gc-mildblue);
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, "Segoe UI", "Noto Sans KR", sans-serif;
     background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
-  header { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
-  header .sub { color: var(--muted); font-size: 12px; }
-  .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); }
-  .badge.llm { color: #062; background: var(--accent); border-color: var(--accent); font-weight: 700; }
-  .badge.offline { color: var(--warn); border-color: var(--warn); }
-  main { flex: 1; overflow-y: auto; padding: 20px; max-width: 860px; width: 100%; margin: 0 auto; }
-  .msg { margin-bottom: 16px; display: flex; }
+  header { padding: 21px 30px; background: var(--gc-blue); color: #fff;
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  header h1 { font-size: 24px; margin: 0; font-weight: 650; display: flex; align-items: center; gap: 12px; }
+  header h1 svg { flex: none; }
+  .info { position: relative; width: 28px; height: 28px; border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,.5); color: #cfe0ed; display: inline-flex;
+    align-items: center; justify-content: center; font-size: 16px; font-weight: 700;
+    font-family: Georgia, serif; font-style: italic; cursor: default; user-select: none; }
+  .info:hover { border-color: #fff; color: #fff; }
+  .info .tip { display: none; position: absolute; top: calc(100% + 12px); right: -6px; z-index: 10;
+    background: #12212f; color: #dfe9f2; font-family: -apple-system, "Segoe UI", "Noto Sans KR", sans-serif;
+    font-style: normal; font-weight: 400; font-size: 16.5px; line-height: 1.6;
+    width: max-content; max-width: 60vw; padding: 12px 16px; border-radius: 9px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+  .info:hover .tip, .info:focus .tip { display: block; }
+  .hspace { flex: 1; }
+  .badge { font-size: 16.5px; padding: 4.5px 13.5px; border-radius: 999px; border: 1px solid rgba(255,255,255,.35); color: #cfe0ed; }
+  .badge.llm { color: #12310a; background: var(--gc-bright); border-color: var(--gc-bright); font-weight: 700; }
+  .badge.offline { color: var(--gc-yellow); border-color: var(--gc-yellow); }
+  button.ghost { font-size: 18px; padding: 7.5px 18px; border-radius: 999px; cursor: pointer;
+    background: transparent; border: 1px solid rgba(255,255,255,.35); color: #cfe0ed; }
+  button.ghost:hover { border-color: #fff; color: #fff; }
+  main { flex: 1; overflow-y: auto; padding: 30px; max-width: 1290px; width: 100%; margin: 0 auto; }
+  .msg { margin-bottom: 24px; display: flex; }
   .msg.user { justify-content: flex-end; }
-  .bubble { padding: 12px 15px; border-radius: 12px; max-width: 88%; white-space: pre-wrap;
-    line-height: 1.6; font-size: 14px; }
-  .msg.user .bubble { background: var(--user); }
-  .msg.bot .bubble { background: var(--panel); border: 1px solid var(--line); }
-  .meta { margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap; }
-  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
-  .pill.ok { color: var(--accent); border-color: var(--accent); }
-  .pill.warn { color: var(--warn); border-color: var(--warn); }
-  .trace { margin-top: 9px; font-size: 12px; color: var(--muted); }
+  .bubble { padding: 18px 22.5px; border-radius: 18px; max-width: 88%; white-space: pre-wrap;
+    line-height: 1.6; font-size: 21px; }
+  .msg.user .bubble { background: var(--user); color: #fff; }
+  .msg.bot .bubble { background: var(--panel); border: 1px solid var(--line);
+    box-shadow: 0 1.5px 4.5px rgba(0,43,73,.06); }
+  .meta { margin-top: 13.5px; display: flex; gap: 9px; flex-wrap: wrap; }
+  .pill { font-size: 16.5px; padding: 3px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.ok { color: var(--gc-green); border-color: var(--gc-green); background: #eaf5ee; }
+  .pill.warn { color: var(--gc-red); border-color: var(--gc-red); background: #fdedf0; }
+  .pill.mask { color: #6d5200; border-color: var(--gc-yellow); background: #fff6dd; }
+  .trace { margin-top: 13.5px; font-size: 18px; color: var(--muted); }
   .trace .tool { display: inline-block; background: var(--panel2); border: 1px solid var(--line);
-    border-radius: 6px; padding: 2px 8px; margin: 2px 4px 2px 0; }
-  .cites { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
-  .cite { font-size: 12px; color: var(--muted); margin: 3px 0; }
+    border-radius: 9px; padding: 3px 12px; margin: 3px 6px 3px 0; }
+  .cites { margin-top: 15px; border-top: 1px dashed var(--line); padding-top: 12px; }
+  .cite { font-size: 18px; color: var(--muted); margin: 4.5px 0; }
   .cite b { color: var(--accent2); }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  .chip { font-size: 12px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 999px;
-    background: var(--panel); cursor: pointer; color: var(--text); }
-  .chip:hover { border-color: var(--accent); }
-  footer { border-top: 1px solid var(--line); padding: 14px 20px; background: var(--panel); }
-  .inputrow { display: flex; gap: 10px; max-width: 860px; margin: 0 auto; }
-  input#q { flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line);
-    background: var(--panel2); color: var(--text); font-size: 14px; }
-  button#send { padding: 0 20px; border-radius: 10px; border: none; background: var(--accent);
-    color: #052; font-weight: 700; cursor: pointer; font-size: 14px; }
+  .chips { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 18px; }
+  .chip { font-size: 18px; padding: 17px 16.5px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); cursor: pointer; color: var(--text); font-family: inherit; text-align: center; }
+  .chip.wide { grid-column: 1 / -1; }
+  .chip:hover { border-color: var(--gc-green); background: #eaf5ee; }
+  @media (max-width: 640px) { .chips { grid-template-columns: 1fr; } }
+  footer { border-top: 1px solid var(--line); padding: 21px 30px; background: var(--panel); }
+  .inputrow { display: flex; gap: 15px; max-width: 1290px; margin: 0 auto; align-items: flex-end; }
+  textarea#q { flex: 1; padding: 18px 21px; border-radius: 15px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); font-size: 21px; font-family: inherit;
+    resize: none; line-height: 1.5; max-height: 180px; }
+  button#send { padding: 16.5px 30px; border-radius: 15px; border: none; background: var(--gc-green);
+    color: #fff; font-weight: 700; cursor: pointer; font-size: 21px; }
+  button#send:hover { background: #00662b; }
   button#send:disabled { opacity: .5; cursor: default; }
-  .empty { color: var(--muted); text-align: center; margin-top: 40px; font-size: 13px; line-height: 1.8; }
+  :focus-visible { outline: 3px solid var(--gc-mildblue); outline-offset: 2px; }
+  .empty { color: var(--muted); text-align: center; margin-top: 60px; margin-bottom: 54px; font-size: 19.5px; line-height: 1.8; }
+  .typing { display: inline-flex; gap: 6px; align-items: center; margin-right: 9px; }
+  .typing i { width: 9px; height: 9px; border-radius: 50%; background: var(--gc-green);
+    animation: blink 1.2s infinite; }
+  .typing i:nth-child(2) { animation-delay: .2s; }
+  .typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 </style>
 </head>
 <body>
   <header>
-    <h1>🧬 RAPV-Assistant</h1>
-    <span class="sub">제약 규제업무(RA·PV) AI 어시스턴트 · RAG + MCP + Agent</span>
+    <h1>
+      <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6z" fill="#E4002B"/>
+        <path d="M17 11h6v6h6v6h-6v6h-6v-6h-6v-6h6z" fill="#43B02A"/>
+      </svg>
+      RAPV-Assistant
+    </h1>
+    <span class="hspace"></span>
     <span id="mode" class="badge">연결 중…</span>
+    <button id="reset" class="ghost" aria-label="대화 초기화">새 대화</button>
+    <span class="info" tabindex="0" role="note" aria-label="서비스 정보">i<span class="tip">제약 규제업무(RA·PV) AI 어시스턴트 · RAG + MCP + Agent<span id="stats"></span></span></span>
   </header>
 
   <main id="log">
     <div class="empty" id="empty">
-      규제 절차·기한·GMP·라벨링·약물감시 등 사내 규제문서를 근거로 답합니다.<br/>
-      에이전트가 MCP 도구(문서검색·마감일·체크리스트·이상사례 트리아지·보고서 초안)를 자율 호출합니다.<br/>
-      아래 예시 질문을 눌러보세요.
+      안녕하세요! 제약 규제업무(RA·PV)를 돕는 AI 어시스턴트입니다.<br/>
+      허가 절차·기한, GMP, 라벨링, 이상사례 보고까지 — 궁금한 내용을 물어보시면 사내 규제문서를 근거로 답해 드려요.<br/>
+      모든 답변에는 참고한 문서의 출처가 함께 표시되어 바로 확인하실 수 있습니다.<br/>
+      아래 예시 질문으로 시작해 보세요. 👇
     </div>
     <div class="chips" id="chips"></div>
   </main>
 
   <footer>
     <div class="inputrow">
-      <input id="q" placeholder="예) 중대한 이상사례는 며칠 안에 보고해야 하나요?" autocomplete="off" />
-      <button id="send">전송</button>
+      <textarea id="q" rows="1" placeholder="예) 중대한 이상사례는 며칠 안에 보고해야 하나요? (Shift+Enter 줄바꿈)"
+        aria-label="질문 입력" autocomplete="off"></textarea>
+      <button id="send" aria-label="질문 전송">전송</button>
     </div>
   </footer>
 
 <script>
+// wide: 긴 케이스 서술 예시 — 칩 그리드에서 한 줄 전체를 차지
 const EXAMPLES = [
-  "품목허가 심사 기간은 얼마나 걸리나요?",
-  "중대한 이상사례는 며칠 안에 보고해야 하나요?",
-  "환자가 복용 후 아나필락시스로 입원했습니다. 언제까지 보고해야 하나요?",
-  "45세 남성 환자가 A정 복용 후 두드러기로 입원, 중단 후 호전됐습니다. 의사 보고 케이스인데 KAERS 보고서 초안 만들어줘",
-  "이번 주 마감 임박한 규제 업무 알려줘",
-  "변경허가 준비 체크리스트 알려줘",
-  "GMP 데이터 완전성(ALCOA) 원칙이 뭐야?",
+  { q: "품목허가 심사 기간은 얼마나 걸리나요?" },
+  { q: "중대한 이상사례는 며칠 안에 보고해야 하나요?" },
+  { q: "환자가 복용 후 아나필락시스로 입원했습니다. 언제까지 보고해야 하나요?" },
+  { q: "이번 주 마감 임박한 규제 업무 알려줘" },
+  { q: "45세 남성 환자가 A정 복용 후 두드러기로 입원, 중단 후 호전됐습니다. 의사 보고 케이스인데 KAERS 보고서 초안 만들어줘", wide: true },
+  { q: "변경허가 준비 체크리스트 알려줘" },
+  { q: "GMP 데이터 완전성(ALCOA) 원칙이 뭐야?" },
 ];
 const log = document.getElementById('log');
 const empty = document.getElementById('empty');
 const chips = document.getElementById('chips');
 const input = document.getElementById('q');
 const sendBtn = document.getElementById('send');
+const resetBtn = document.getElementById('reset');
 
 EXAMPLES.forEach(x => {
-  const c = document.createElement('div');
-  c.className = 'chip'; c.textContent = x;
-  c.onclick = () => { input.value = x; send(); };
+  const c = document.createElement('button');
+  c.type = 'button';
+  c.className = 'chip' + (x.wide ? ' wide' : '');
+  c.textContent = x.q;
+  c.onclick = () => { input.value = x.q; send(); };
   chips.appendChild(c);
 });
 
@@ -101,10 +152,15 @@ fetch('/health').then(r => r.json()).then(h => {
   const b = document.getElementById('mode');
   b.textContent = h.mode === 'llm' ? 'LLM 모드' : '오프라인 모드';
   b.className = 'badge ' + h.mode;
-  b.title = h.banner + ` · 문서 ${h.rag.docs} · 청크 ${h.rag.chunks}`;
+  b.title = h.banner;
+  if (h.rag) document.getElementById('stats').textContent = ` · 문서 ${h.rag.docs} · 청크 ${h.rag.chunks}`;
 }).catch(() => { document.getElementById('mode').textContent = '오프라인'; });
 
 function esc(s){ return (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// 사용자가 위로 스크롤해 읽는 중이면 강제 스크롤하지 않는다(하단 근접 시에만 따라감).
+function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 180; }
+function scrollDown(force) { if (force || nearBottom()) log.scrollTop = log.scrollHeight; }
 
 function addMsg(role, text) {
   empty.style.display = 'none';
@@ -112,11 +168,12 @@ function addMsg(role, text) {
   wrap.className = 'msg ' + role;
   wrap.innerHTML = `<div class="bubble">${esc(text)}</div>`;
   log.appendChild(wrap);
-  log.scrollTop = log.scrollHeight;
+  scrollDown(role === 'user');
   return wrap.querySelector('.bubble');
 }
 
 function renderBot(bubble, data) {
+  const stick = nearBottom();
   let html = esc(data.answer);
   // 근거 상태 배지: 도구 근거 확보 여부 — 오프라인 모드에서 False 는 회피(abstention),
   // LLM 모드에서 False 는 모델이 도구 근거 없이 답했다는 뜻(둘 다 실무 참고 금지 신호)
@@ -127,7 +184,7 @@ function renderBot(bubble, data) {
     ? `<span class="pill">⚡ ${data.latency_ms} ms</span>` : '';
   // PII 마스킹 배지: 개인정보가 외부 LLM/로그로 나가기 전에 마스킹됐음을 표시
   const red = (data.redactions && data.redactions.length)
-    ? `<span class="pill warn">🔒 개인정보 마스킹: ${data.redactions.map(r => `${esc(r.type)} ${r.count}건`).join(', ')}</span>` : '';
+    ? `<span class="pill mask">🔒 개인정보 마스킹: ${data.redactions.map(r => `${esc(r.type)} ${r.count}건`).join(', ')}</span>` : '';
   // 사후 검증 배지: 답변 속 수치·날짜·방향 한정어가 근거/도구 결과와 대조됐음을 표시
   let ver = '';
   if (data.verification && typeof data.verification.ok === 'boolean') {
@@ -165,24 +222,30 @@ function renderBot(bubble, data) {
       `</div>`;
   }
   bubble.innerHTML = html;
-  log.scrollTop = log.scrollHeight;
+  scrollDown(stick);
 }
 
 // 멀티턴: 최근 대화 이력을 유지해 후속질문("그럼 그건?")이 맥락을 잇게 한다.
 const history = [];
+let busy = false; // Enter 키는 sendBtn.disabled 를 무시하므로 별도 가드
 
 async function send() {
   const message = input.value.trim();
-  if (!message) return;
+  if (!message || busy) return;
+  busy = true;
   input.value = '';
+  autoResize();
+  chips.style.display = 'none';
   addMsg('user', message);
-  const bubble = addMsg('bot', '⏳ 규제문서를 검색하고 있습니다…');
+  const bubble = addMsg('bot', '');
+  bubble.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>규제문서를 검색하고 있습니다…';
   sendBtn.disabled = true;
   try {
     const res = await fetch('/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ message, history })
     });
+    if (!res.ok) throw new Error(`서버 오류 (HTTP ${res.status})`);
     const data = await res.json();
     renderBot(bubble, data);
     // 이력 갱신(최근 6턴만 유지)
@@ -190,14 +253,38 @@ async function send() {
     history.push({ role: 'assistant', content: data.answer });
     while (history.length > 6) history.shift();
   } catch (e) {
-    bubble.textContent = '오류가 발생했습니다: ' + e;
+    bubble.textContent = '오류가 발생했습니다: ' + (e.message || e);
   } finally {
+    busy = false;
     sendBtn.disabled = false;
     input.focus();
   }
 }
+
+resetBtn.onclick = () => {
+  history.length = 0;
+  log.querySelectorAll('.msg').forEach(m => m.remove());
+  empty.style.display = '';
+  chips.style.display = '';
+  input.value = '';
+  autoResize();
+  input.focus();
+};
+
+// 긴 케이스 서술 입력 대비: 1~4줄 자동 높이
+function autoResize() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+}
+input.addEventListener('input', autoResize);
+
 sendBtn.onclick = send;
-input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+input.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  if (e.isComposing || e.keyCode === 229) return; // 한글 IME 조합 중 Enter 중복 전송 방지
+  e.preventDefault();
+  send();
+});
 </script>
 </body>
 </html>
