@@ -2,3 +2,10 @@
 __pycache__/
 *.pyc
 .env
+
+# 지원 문서 (루트 md, 커밋된 저장소 문서는 예외)
+/*.md
+!/README.md
+!/CLAUDE.md
+!/DEPLOY.md
+/직접작성/
