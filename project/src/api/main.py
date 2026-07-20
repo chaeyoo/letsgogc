@@ -5,6 +5,7 @@
   GET  /health      → 실행 모드/인덱스 상태 + 검증 게이트 경고율 계기판
   POST /chat        → 사용자 메시지 → 에이전트 응답(+도구호출·출처)
   GET  /api/deadlines → 대시보드용 마감일 (부가)
+  GET  /dictionary  → 용어 사전 플래시카드 (description/dictionary.html, self-contained)
 
 FDE 관점: 에이전트(백엔드)를 API로 서빙하고 프론트(챗 UI)와 연결하는
 전형적인 풀스택 구조. 실제 배포 시 인증·로깅·관측성을 이 계층에 추가한다.
@@ -120,4 +121,12 @@ async def deadlines() -> JSONResponse:
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     html = (config.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(html)
+
+
+@app.get("/dictionary", response_class=HTMLResponse)
+async def dictionary() -> HTMLResponse:
+    # dictionary.md 원문이 mdsrc 블록에 주입된 정적 단일 파일(외부 의존 없음).
+    # 갱신은 description/build_dictionary_html.py 실행 후 재배포.
+    html = config.DICTIONARY_HTML.read_text(encoding="utf-8")
     return HTMLResponse(html)
