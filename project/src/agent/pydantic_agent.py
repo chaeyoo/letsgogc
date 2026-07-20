@@ -6,16 +6,16 @@
 
   - 도구는 MCP 를 통해 호출한다 — `MCPToolset` 이 인메모리 FastMCP 서버
     (src/mcp_server/server.py 의 `mcp`)에 직접 붙으므로, 도구 이름·설명·스키마의
-    출처가 SDK 백엔드와 동일하다(스키마 이중 유지 없음).
+    출처가 direct 백엔드와 동일하다(스키마 이중 유지 없음).
   - 도구 호출 1건마다의 북키핑(신뢰 소스·출처·grounded·이력 허용 집합)은
-    `process_tool_call` 훅에서 SDK 루프 본문과 같은 헬퍼로 수행한다.
-  - 모든 답변은 SDK 백엔드와 동일 인자로 `_finalize()` 검증 게이트를 지난다.
+    `process_tool_call` 훅에서 direct 루프 본문과 같은 헬퍼로 수행한다.
+  - 모든 답변은 direct 백엔드와 동일 인자로 `_finalize()` 검증 게이트를 지난다.
 
-의도된 차이(프레임워크의 계산 방식): SDK 루프는 '왕복 6회'를 한 카운터로
+의도된 차이(프레임워크의 계산 방식): direct 루프는 '왕복 6회'를 한 카운터로
 세지만, 여기서는 모델 요청 상한(UsageLimits.request_limit=6)과 도구 재시도
 상한(Agent retries=2)이 분리되어 있다 — 상한이 존재한다는 계약은 같고,
 초과 시 사용자 문구도 같다. 도구 실패의 자가 정정 되먹임은 MCPToolset 이
-ToolError→ModelRetry 변환으로 대신한다(SDK 루프의 is_error=True 되먹임과 동치).
+ToolError→ModelRetry 변환으로 대신한다(direct 루프의 is_error=True 되먹임과 동치).
 """
 from __future__ import annotations
 
@@ -45,14 +45,14 @@ from .agent import (
     _summarize,
 )
 
-MAX_LLM_REQUESTS = 6  # SDK 루프의 6-step 상한과 같은 역할(모델 요청 횟수 상한)
+MAX_LLM_REQUESTS = 6  # direct 루프의 6-step 상한과 같은 역할(모델 요청 횟수 상한)
 
 
 @dataclass
 class PaDeps:
-    """per-run 가변 상태 — SDK 루프의 '증거 바구니' 지역변수들과 1:1 대응.
+    """per-run 가변 상태 — direct 루프의 '증거 바구니' 지역변수들과 1:1 대응.
 
-    SDK 루프는 함수 지역변수로 증거를 쌓지만, PydanticAI 에서는 루프가
+    direct 루프는 함수 지역변수로 증거를 쌓지만, PydanticAI 에서는 루프가
     프레임워크 안에 있으므로 RunContext.deps 로 같은 바구니를 흘려보낸다.
     """
 
@@ -79,7 +79,7 @@ def _normalize(data: Any) -> Any:
 async def _process_tool_call(
     ctx: RunContext[PaDeps], call_tool: CallToolFunc, name: str, tool_args: dict[str, Any]
 ) -> ToolResult:
-    """도구 호출 1건의 관문 — SDK 루프 본문의 북키핑을 같은 헬퍼로 수행한다."""
+    """도구 호출 1건의 관문 — direct 루프 본문의 북키핑을 같은 헬퍼로 수행한다."""
     deps = ctx.deps
     flow(
         "_process_tool_call()",
@@ -93,12 +93,12 @@ async def _process_tool_call(
     except Exception as e:
         # 실패도 UI 표시용으로 기록하고 그대로 재-raise 한다 — MCPToolset 의
         # tool_error_behavior='retry'(기본)가 에러 문구를 ModelRetry 로 모델에
-        # 되먹여 자가 정정시킨다(SDK 루프의 is_error=True 되먹임과 동치).
+        # 되먹여 자가 정정시킨다(direct 루프의 is_error=True 되먹임과 동치).
         deps.tool_calls.append(
             ToolCall(name, dict(tool_args), f"오류: 도구 '{name}' 실행 실패: {type(e).__name__}: {e}")
         )
         raise
-    # ── SDK 루프(agent.py _chat_llm)와 동일한 북키핑 ──
+    # ── direct 루프(agent.py _chat_llm)와 동일한 북키핑 ──
     if not _is_contract_error(data):
         # 성공 출력만 신뢰 소스로. 입력 에코(query·as_of)는 버리고 케이스
         # 서술(case)은 별도 계층(user_facts)으로 — 근거 승격 구멍 차단.
@@ -133,7 +133,7 @@ def _build_model():
 
 
 def _build_agent() -> Agent[PaDeps, str]:
-    """호출마다 toolset+Agent 를 새로 만든다 — SDK 백엔드가 호출마다
+    """호출마다 toolset+Agent 를 새로 만든다 — direct 백엔드가 호출마다
     `Client(mcp)` 를 여는 것과 동형(이벤트 루프 간 세션 공유 없음)."""
     toolset = MCPToolset(mcp, process_tool_call=_process_tool_call)
     return Agent(
@@ -147,7 +147,7 @@ def _build_agent() -> Agent[PaDeps, str]:
 def _to_model_messages(history: list[dict]) -> list[ModelRequest | ModelResponse]:
     """anthropic 스타일 role/content dict 이력 → PydanticAI ModelMessage.
 
-    텍스트만 이월한다(SDK 백엔드도 이력의 텍스트 표기만 실질 사용) —
+    텍스트만 이월한다(direct 백엔드도 이력의 텍스트 표기만 실질 사용) —
     도구 블록 등 비텍스트 표기는 이전 턴의 내부 산출물이라 재전송하지 않는다.
     """
     out: list[ModelRequest | ModelResponse] = []
@@ -202,20 +202,20 @@ async def chat_llm_pydantic(message: str, history: list[dict], trace: Trace) -> 
             "chat_llm_pydantic()",
             "PydanticAI 실행 완료 — 답변 확정, 사후 검증 게이트로",
             answer_len=len(answer), tool_calls=len(deps.tool_calls), grounded=grounded,
-            next="_finalize() — SDK 백엔드와 동일 인자로 답변 속 수치·인용을 신뢰 소스와 대조",
+            next="_finalize() — direct 백엔드와 동일 인자로 답변 속 수치·인용을 신뢰 소스와 대조",
         )
     except UsageLimitExceeded:
-        # 요청 상한 초과 — SDK 루프가 6바퀴를 다 쓴 경우와 같은 문구로 마감.
+        # 요청 상한 초과 — direct 루프가 6바퀴를 다 쓴 경우와 같은 문구로 마감.
         # deps 에 쌓인 증거(출처·신뢰 소스)는 그대로 살려 반환한다.
         answer = "(도구 호출이 반복되어 응답을 확정하지 못했습니다. 질문을 좁혀 다시 시도해 주세요.)"
         flow(
             "chat_llm_pydantic()",
-            "요청 상한 초과(UsageLimitExceeded) — 확정 실패 안내로 마감(SDK 6-step 상한과 같은 계약)",
+            "요청 상한 초과(UsageLimitExceeded) — 확정 실패 안내로 마감(direct 6-step 상한과 같은 계약)",
             tool_calls=len(deps.tool_calls),
             next="_finalize() — 실패 안내문도 검증 게이트는 통과시켜 반환한다",
         )
     except Exception as e:  # noqa: BLE001 - 외부 API 실패는 명시적 안내로 흡수
-        # SDK 백엔드와 같은 규율: 예외 '타입명'만 싣고 메시지 원문은 싣지 않는다
+        # direct 백엔드와 같은 규율: 예외 '타입명'만 싣고 메시지 원문은 싣지 않는다
         # (외부 라이브러리 에러 문구에는 요청 내용이 에코될 수 있다).
         answer = (
             f"(LLM API 호출에 실패했습니다: {type(e).__name__}. "

@@ -31,7 +31,7 @@ def _use_backend(monkeypatch, model) -> None:
 
 
 def _scripted(steps: list[list]) -> FunctionModel:
-    """준비된 응답 파트를 순서대로 돌려주는 모델 — SDK 테스트의 _stub_anthropic 대응물."""
+    """준비된 응답 파트를 순서대로 돌려주는 모델 — direct 테스트의 _stub_anthropic 대응물."""
     state = {"i": 0}
 
     def fn(messages, info: AgentInfo) -> ModelResponse:
@@ -44,7 +44,7 @@ def _scripted(steps: list[list]) -> FunctionModel:
 
 async def test_pa_history_search_allows_only_returned_superseded_docs(monkeypatch):
     """as_of(이력) 검색이 '실제로 반환한' 폐지본 인용은 경고에서 면제된다 —
-    process_tool_call 훅의 history_doc_ids 배선이 SDK 루프와 동일한지."""
+    process_tool_call 훅의 history_doc_ids 배선이 direct 루프와 동일한지."""
     _use_backend(monkeypatch, _scripted([
         [ToolCallPart(tool_name="search_regulations",
                       args={"query": "중대한 이상사례 보고 기한", "as_of": "2025-01-01"})],
@@ -142,7 +142,7 @@ async def test_pa_api_failure_is_explicit_not_500(monkeypatch):
 
 
 async def test_pa_request_limit_maps_to_explicit_answer(monkeypatch):
-    """도구 호출만 반복되면 UsageLimits 상한이 걸리고 — SDK 6-step 상한과 같은
+    """도구 호출만 반복되면 UsageLimits 상한이 걸리고 — direct 6-step 상한과 같은
     확정 실패 문구로 마감된다. 상한까지 쌓인 증거(tool_calls)는 보존된다."""
     def always_tool(messages, info: AgentInfo) -> ModelResponse:
         return ModelResponse(parts=[
@@ -159,7 +159,7 @@ async def test_pa_request_limit_maps_to_explicit_answer(monkeypatch):
 
 async def test_pa_multiturn_history_carries_context(monkeypatch):
     """dict 이력이 ModelMessage 로 변환되어 전달되고, 직전 사용자 발화의 수치는
-    검증에서 '전제(question_origin)'로 라벨링된다 — SDK 경로와 같은 완화 창."""
+    검증에서 '전제(question_origin)'로 라벨링된다 — direct 경로와 같은 완화 창."""
     seen = {}
 
     def fn(messages, info: AgentInfo) -> ModelResponse:
@@ -191,7 +191,7 @@ async def test_pa_testmodel_smoke(monkeypatch):
     assert r.grounded is True  # 마감 데이터는 내용 있는 결정론 도구 출력
 
 
-async def test_pa_default_backend_is_sdk():
-    """AGENT_BACKEND 기본값은 'sdk' — 명시적으로 켜지 않으면 PydanticAI 백엔드로
+async def test_pa_default_backend_is_direct():
+    """AGENT_BACKEND 기본값은 'direct' — 명시적으로 켜지 않으면 PydanticAI 백엔드로
     라우팅되지 않는다(기존 경로·평가 수치 보존 가드)."""
-    assert config.AGENT_BACKEND == "sdk"
+    assert config.AGENT_BACKEND == "direct"

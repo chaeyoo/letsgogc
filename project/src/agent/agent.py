@@ -295,7 +295,7 @@ class RaAgent:
                 if config.AGENT_BACKEND == "pydantic_ai":
                     # 병렬 백엔드: 같은 계약(_finalize 게이트·mode="llm")을
                     # PydanticAI 프레임워크 루프로 수행. 지연 import — 미설치
-                    # 환경에서 기본(sdk) 경로가 영향받지 않는다.
+                    # 환경에서 기본(direct) 경로가 영향받지 않는다.
                     from .pydantic_agent import chat_llm_pydantic
 
                     result = await chat_llm_pydantic(message, history, trace)

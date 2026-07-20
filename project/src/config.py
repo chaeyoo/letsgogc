@@ -20,9 +20,9 @@ WEB_DIR = BASE_DIR / "web"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-8")
 LLM_AVAILABLE = bool(ANTHROPIC_API_KEY)
-# LLM 모드의 에이전트 루프 구현 선택 — 'sdk'(기본: anthropic SDK 직접 구현 루프)
+# LLM 모드의 에이전트 루프 구현 선택 — 'direct'(기본: anthropic SDK 직접 구현 루프)
 # | 'pydantic_ai'(PydanticAI 프레임워크 백엔드). 오프라인 모드는 백엔드 무관.
-AGENT_BACKEND = os.environ.get("AGENT_BACKEND", "sdk").strip().lower()
+AGENT_BACKEND = os.environ.get("AGENT_BACKEND", "direct").strip().lower()
 
 # RAG 하이퍼파라미터 (RAG '최적화'의 손잡이들)
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "500"))       # 청크 크기(문자)
