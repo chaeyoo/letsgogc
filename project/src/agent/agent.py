@@ -280,7 +280,12 @@ class RaAgent:
             "모드 분기 — ANTHROPIC_API_KEY 유무로 결정(llm: Claude tool-use 루프 / offline: 규칙 라우터)",
             mode="llm" if config.LLM_AVAILABLE else "offline",
             next=(
-                "_chat_llm() 호출 — API 키가 있으므로 Claude 가 스스로 도구를 선택한다"
+                (
+                    "chat_llm_pydantic() 호출 — API 키가 있고 AGENT_BACKEND=pydantic_ai 이므로 "
+                    "PydanticAI 백엔드가 tool-use 루프를 수행한다"
+                    if config.AGENT_BACKEND == "pydantic_ai"
+                    else "_chat_llm() 호출 — API 키가 있으므로 Claude 가 스스로 도구를 선택한다"
+                )
                 if config.LLM_AVAILABLE
                 else "_chat_offline() 호출 — API 키가 없으므로 키워드 규칙 라우터가 도구를 선택한다"
             ),
