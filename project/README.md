@@ -86,13 +86,14 @@ flowchart TB
 | **개인정보 보호** | PII 비식별화 2겹(에이전트 입구+도구 계층) — 한글 직결·조사 표기까지 룩어라운드 경계 | `src/pv/redactor.py` |
 | **MCP / FastMCP** | Tools 6 + Resource + Prompt(3대 primitive), 인메모리/stdio | `src/mcp_server/server.py` |
 | **Agentic / Function Calling** | tool-use 루프, 도구 에러 자가복구, 오프라인 규칙 라우터 폴백 | `src/agent/agent.py` |
+| **PydanticAI** | 동일 계약(검증 게이트·MCP 도구·grounded 판정)의 병렬 백엔드 — `AGENT_BACKEND=pydantic_ai` 로 직접 구현 루프와 교체·비교 가능, MCPToolset 이 인메모리 FastMCP 에 직결 | `src/agent/pydantic_agent.py` |
 | **FastAPI · 프론트엔드** | `/chat`·`/health` + 단일 페이지 챗 UI(출처·트레이스·검증 배지) | `src/api/`, `web/` |
 | **신뢰성(환각 억제)** | groundedness·abstention(AND 문턱)·출처/버전 추적·`as_of` 시점 조회 | `src/agent/`, `src/rag/retriever.py` |
 | **답변 사후 검증** | 전 응답 통과 런타임 게이트 + 게이트 자체의 메타모픽 평가(pytest 가드로 CI 강제) | `src/verify/`, `eval/verify_eval.py` |
 | **배포 전 점검(FDE Day-0)** | 설정·코퍼스·업무데이터·스모크+안전장치 자가 테스트 — 실패 시 기동 차단 | `src/preflight.py` |
 | **운영 계기판** | 검증 경고율(`warn_rate_checked`)·감사 로그를 `/health` 노출 | `src/observability.py` |
 | **실데이터 인제스트** | PDF→코퍼스 변환 경로(헤딩 휴리스틱+frontmatter, 상용 파서 교체 자리) | `scripts/ingest_pdf.py` |
-| **테스트/CI** | pytest 291케이스(불변식/fuzz 포함) + Actions(preflight+평가 4종 회귀) | `tests/`, 루트 `.github/workflows/ci.yml` |
+| **테스트/CI** | pytest 303케이스(불변식/fuzz 포함) + Actions(preflight+평가 4종 회귀) | `tests/`, 루트 `.github/workflows/ci.yml` |
 
 ## 5. 실행 방법
 
@@ -102,7 +103,7 @@ cd project
 export ANTHROPIC_API_KEY=sk-ant-...   # (선택) LLM 모드 — 없어도 오프라인 grounded 답변으로 항상 동작
 ```
 
-품질 확인: `.venv/bin/python -m src.preflight`(배포 전 점검) · `-m pytest`(291케이스) ·
+품질 확인: `.venv/bin/python -m src.preflight`(배포 전 점검) · `-m pytest`(303케이스) ·
 `-m eval.evaluate / sweep / faithfulness / pv_eval / verify_eval`(평가 5종, 95% CI 병기).
 CI는 매 푸시마다 preflight+테스트+평가 4종을 실행한다. MCP 단독 실행·Claude Desktop 연결은
 [사용자 가이드](description/가이드.md) 참고.

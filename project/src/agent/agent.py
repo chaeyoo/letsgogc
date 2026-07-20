@@ -280,14 +280,27 @@ class RaAgent:
             "모드 분기 — ANTHROPIC_API_KEY 유무로 결정(llm: Claude tool-use 루프 / offline: 규칙 라우터)",
             mode="llm" if config.LLM_AVAILABLE else "offline",
             next=(
-                "_chat_llm() 호출 — API 키가 있으므로 Claude 가 스스로 도구를 선택한다"
+                (
+                    "chat_llm_pydantic() 호출 — API 키가 있고 AGENT_BACKEND=pydantic_ai 이므로 "
+                    "PydanticAI 백엔드가 tool-use 루프를 수행한다"
+                    if config.AGENT_BACKEND == "pydantic_ai"
+                    else "_chat_llm() 호출 — API 키가 있으므로 Claude 가 스스로 도구를 선택한다"
+                )
                 if config.LLM_AVAILABLE
                 else "_chat_offline() 호출 — API 키가 없으므로 키워드 규칙 라우터가 도구를 선택한다"
             ),
         )
         with timed(trace, "chat", "agent", {"mode": "llm" if config.LLM_AVAILABLE else "offline"}):
             if config.LLM_AVAILABLE:
-                result = await self._chat_llm(message, history, trace)
+                if config.AGENT_BACKEND == "pydantic_ai":
+                    # 병렬 백엔드: 같은 계약(_finalize 게이트·mode="llm")을
+                    # PydanticAI 프레임워크 루프로 수행. 지연 import — 미설치
+                    # 환경에서 기본(direct) 경로가 영향받지 않는다.
+                    from .pydantic_agent import chat_llm_pydantic
+
+                    result = await chat_llm_pydantic(message, history, trace)
+                else:
+                    result = await self._chat_llm(message, history, trace)
             else:
                 result = await self._chat_offline(message, history, trace)
         result.trace = trace.to_list()

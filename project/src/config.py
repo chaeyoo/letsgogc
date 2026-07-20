@@ -20,6 +20,9 @@ WEB_DIR = BASE_DIR / "web"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-8")
 LLM_AVAILABLE = bool(ANTHROPIC_API_KEY)
+# LLM 모드의 에이전트 루프 구현 선택 — 'direct'(기본: anthropic SDK 직접 구현 루프)
+# | 'pydantic_ai'(PydanticAI 프레임워크 백엔드). 오프라인 모드는 백엔드 무관.
+AGENT_BACKEND = os.environ.get("AGENT_BACKEND", "direct").strip().lower()
 
 # RAG 하이퍼파라미터 (RAG '최적화'의 손잡이들)
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "500"))       # 청크 크기(문자)
@@ -44,5 +47,6 @@ QUERY_EXPANSION = os.environ.get("QUERY_EXPANSION", "1") not in ("0", "false", "
 def mode_banner() -> str:
     """현재 실행 모드를 한 줄로 반환(로그/헬스체크용)."""
     if LLM_AVAILABLE:
-        return f"[LLM 모드] Enterprise LLM API 사용 · model={LLM_MODEL}"
+        backend = " · backend=pydantic_ai" if AGENT_BACKEND == "pydantic_ai" else ""
+        return f"[LLM 모드] Enterprise LLM API 사용 · model={LLM_MODEL}{backend}"
     return "[오프라인 모드] API 키 없음 → 검색 근거 기반 추출형 답변으로 폴백"
