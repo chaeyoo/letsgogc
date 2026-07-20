@@ -33,6 +33,11 @@ def test_app_boots_and_serves_endpoints():
         assert r_dl.status_code == 200
         assert isinstance(r_dl.json(), list)
 
+        # 용어 사전 플래시카드 — description/dictionary.html 정적 서빙
+        r_dict = client.get("/dictionary")
+        assert r_dict.status_code == 200
+        assert 'id="mdsrc"' in r_dict.text  # md 원문이 주입된 self-contained 페이지
+
         # 챗 — 오프라인 모드 근거 기반 답변
         r_chat = client.post("/chat", json={"message": "중대한 이상사례는 며칠 안에 보고?"})
         assert r_chat.status_code == 200
