@@ -6,6 +6,7 @@
   POST /chat        → 사용자 메시지 → 에이전트 응답(+도구호출·출처)
   GET  /api/deadlines → 대시보드용 마감일 (부가)
   GET  /dictionary  → 용어 사전 플래시카드 (description/dictionary.html, self-contained)
+  GET  /blank       → 예제문100 빈칸 퀴즈 (description/blank.html, self-contained)
 
 FDE 관점: 에이전트(백엔드)를 API로 서빙하고 프론트(챗 UI)와 연결하는
 전형적인 풀스택 구조. 실제 배포 시 인증·로깅·관측성을 이 계층에 추가한다.
@@ -129,4 +130,12 @@ async def dictionary() -> HTMLResponse:
     # dictionary.md 원문이 mdsrc 블록에 주입된 정적 단일 파일(외부 의존 없음).
     # 갱신은 description/build_dictionary_html.py 실행 후 재배포.
     html = config.DICTIONARY_HTML.read_text(encoding="utf-8")
+    return HTMLResponse(html)
+
+
+@app.get("/blank", response_class=HTMLResponse)
+async def blank_quiz() -> HTMLResponse:
+    # 예제문100(dictionary.md 말미 섹션)을 빈칸 퀴즈로 푸는 정적 단일 파일.
+    # 문장을 고치면 blank.html 의 DATA 배열도 함께 갱신해야 한다.
+    html = config.BLANK_HTML.read_text(encoding="utf-8")
     return HTMLResponse(html)

@@ -38,6 +38,12 @@ def test_app_boots_and_serves_endpoints():
         assert r_dict.status_code == 200
         assert 'id="mdsrc"' in r_dict.text  # md 원문이 주입된 self-contained 페이지
 
+        # 예제문100 빈칸 퀴즈 — description/blank.html 정적 서빙
+        r_blank = client.get("/blank")
+        assert r_blank.status_code == 200
+        assert "예제문100 빈칸 퀴즈" in r_blank.text
+        assert r_blank.text.count("{{") >= 100  # 100문장 분량의 빈칸 마킹이 실려 있다
+
         # 챗 — 오프라인 모드 근거 기반 답변
         r_chat = client.post("/chat", json={"message": "중대한 이상사례는 며칠 안에 보고?"})
         assert r_chat.status_code == 200

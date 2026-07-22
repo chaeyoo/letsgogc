@@ -17,6 +17,7 @@ RA_TASKS_FILE = DATA_DIR / "ra_tasks.json"
 WEB_DIR = BASE_DIR / "web"
 DESCRIPTION_DIR = BASE_DIR / "description"
 DICTIONARY_HTML = DESCRIPTION_DIR / "dictionary.html"
+BLANK_HTML = DESCRIPTION_DIR / "blank.html"
 
 # LLM (Enterprise LLM API) 설정 — 있으면 사용, 없으면 오프라인 폴백
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
