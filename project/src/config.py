@@ -33,6 +33,15 @@ MCP_SERVER_URL = (
 # 헬스체크 URL — /mcp 엔드포인트와 같은 서버의 custom route
 MCP_SERVER_HEALTH_URL = MCP_SERVER_URL.rsplit("/mcp", 1)[0] + "/health"
 
+# MCP 서버 Bearer 토큰 (선택) — 설정하면 서버는 이 토큰만 허용하고, 클라이언트
+# (에이전트·preflight)는 요청에 자동 부착한다. MCP 서버를 공개 URL 로 열 때 필수.
+# 내부 네트워크 전용(private service·compose 내부·로컬)에서는 비워 둔다.
+MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+# 공개 배포 가드 — 켜면 preflight 가 '토큰 없는 공개 서버' 상태로 기동을 거부한다.
+# 공개(web) 서비스에는 이 플래그를 함께 배포해, 나중에 토큰이 실수로 지워져도
+# 무인증 공개 상태로 조용히 돌아가지 않게 한다(fail-closed).
+MCP_REQUIRE_AUTH = os.environ.get("MCP_REQUIRE_AUTH", "").strip() in ("1", "true", "on")
+
 # LLM (Enterprise LLM API) 설정 — 있으면 사용, 없으면 오프라인 폴백
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-8")

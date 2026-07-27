@@ -158,3 +158,59 @@ async def test_list_documents_contract(mcp_server_url):
     out = await _call(mcp_server_url, "list_regulation_documents", {})
     assert out["count"] >= 12
     assert all("doc_id" in d and "title" in d for d in out["documents"])
+
+
+async def test_auth_token_gates_public_server():
+    """공개 배포 인증 계약 — MCP_AUTH_TOKEN 이 설정된 서버는 무토큰·오토큰
+    요청을 거부하고 유효 토큰만 통과시키며, /health 는 인증 밖에 남는다
+    (Render 헬스체크가 무토큰으로 호출). 프로덕션 서버(mcp)는 import 시점
+    토큰으로 구성이 고정되므로, 같은 _build_auth 배선을 쓰는 별도 인스턴스로
+    검증한다."""
+    import httpx
+    import pytest
+    from fastmcp import FastMCP
+
+    from src import config
+    from src.mcp_server.http_harness import run_mcp_http_server
+    from src.mcp_server.server import _build_auth
+
+    token, orig = "test-secret-token", config.MCP_AUTH_TOKEN
+    config.MCP_AUTH_TOKEN = token
+    try:
+        guarded = FastMCP("auth-contract", auth=_build_auth())
+    finally:
+        config.MCP_AUTH_TOKEN = orig
+
+    @guarded.tool
+    def ping() -> dict:
+        return {"pong": True}
+
+    @guarded.custom_route("/health", methods=["GET"])
+    async def health(request):  # noqa: ANN001
+        from starlette.responses import JSONResponse
+
+        return JSONResponse({"status": "ok"})
+
+    with run_mcp_http_server(server_obj=guarded) as url:
+        base = url.rsplit("/mcp", 1)[0]
+        assert httpx.get(f"{base}/health", timeout=5).status_code == 200  # 무인증 헬스체크
+        with pytest.raises(Exception):
+            async with Client(url) as c:  # 무토큰 → 401
+                await c.list_tools()
+        with pytest.raises(Exception):
+            async with Client(url, auth="wrong-token") as c:  # 오토큰 → 401
+                await c.list_tools()
+        async with Client(url, auth=token) as c:  # 유효 토큰 → 통과
+            assert (await c.call_tool("ping", {})).data == {"pong": True}
+
+
+def test_build_auth_disabled_without_token(monkeypatch):
+    """토큰이 비면 인증기가 만들어지지 않는다 — 내부 네트워크 전용 배포
+    (private service·compose·stdio·테스트)의 무인증 동작 보장."""
+    from src import config
+    from src.mcp_server.server import _build_auth
+
+    monkeypatch.setattr(config, "MCP_AUTH_TOKEN", "")
+    assert _build_auth() is None
+    monkeypatch.setattr(config, "MCP_AUTH_TOKEN", "x")
+    assert _build_auth() is not None

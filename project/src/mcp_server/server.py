@@ -30,7 +30,21 @@ from .. import config
 from ..observability import flow
 from ..rag.pipeline import RagPipeline
 
-mcp = FastMCP("RAPV-Assistant")
+def _build_auth():
+    """MCP_AUTH_TOKEN 이 설정된 경우에만 Bearer 토큰 검증기를 만든다.
+
+    공개 URL 배포(Render web)용 — 내부 네트워크 전용(private service·compose
+    내부·로컬 stdio)에서는 토큰 없이 무인증으로 동작한다. /health custom route
+    는 인증 밖에 남는다(Render 헬스체크가 무토큰으로 호출) — 실측 확인.
+    """
+    if not config.MCP_AUTH_TOKEN:
+        return None
+    from fastmcp.server.auth import StaticTokenVerifier
+
+    return StaticTokenVerifier(tokens={config.MCP_AUTH_TOKEN: {"client_id": "rapv-client"}})
+
+
+mcp = FastMCP("RAPV-Assistant", auth=_build_auth())
 
 # 규제문서 RAG 인덱스는 서버 로드시 1회 구축 (무거운 초기화를 캐시)
 _pipeline: RagPipeline | None = None

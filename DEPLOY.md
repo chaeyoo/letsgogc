@@ -37,28 +37,54 @@ MCP_SERVER_URL=http://127.0.0.1:8001/mcp sh -c \
 
 ## 1. 경로 A — Render (권장, 2-서비스 Blueprint)
 
-유료 플랜(starter) 기준 — **private service** 로 MCP 서버를 외부 비공개로 띄운다.
+유료 플랜(starter) 기준. MCP 서버(rapv-mcp)는 **공개 web 서비스 + Bearer 토큰
+인증**으로 띄운다 — 외부 MCP 클라이언트(Claude Desktop 등)의 원격 연결 시연용.
 `render.yaml` 을 자동 인식한다.
 
 1. 코드를 GitHub 에 푸시(이미 되어 있으면 생략).
 2. [dashboard.render.com](https://dashboard.render.com) 로그인 → **New +** → **Blueprint**.
 3. 이 GitHub 리포를 선택 → Render 가 레포 루트의 `render.yaml` 을 읽어 서비스 2개를
    자동 구성한다:
-   - **rapv-mcp** (private service) — `preflight --role mcp` 통과 후 MCP HTTP 서버
-     기동(RAG 인덱스 구축). 내부 네트워크 전용, 공개 URL 없음.
+   - **rapv-mcp** (web) — `preflight --role mcp` 통과 후 MCP HTTP 서버 기동(RAG
+     인덱스 구축). `MCP_REQUIRE_AUTH=1` 이라 **`MCP_AUTH_TOKEN` 을 대시보드에서
+     넣기 전에는 기동을 거부**한다(무인증 공개 서버 방지). `/health` 만 인증 밖
+     (헬스체크용).
    - **rapv-assistant** (web) — `preflight --role api` 가 MCP 서버 실연결(도구 6종
      노출)까지 확인한 뒤 uvicorn 기동. MCP 호스트명은 `MCP_SERVER_HOST` 로
      `fromService`(property: host) 자동 주입되고, 포트는 8001 고정 —
      코드의 `src/config.py` 가 URL 로 조립한다. `hostport`/`port` 속성은
      대상 서비스의 '열린 포트 감지' 뒤에야 채워져 첫 sync 에 빈 값이 될 수
-     있으므로 쓰지 않는다.
-4. **Apply** → 빌드·배포가 돈다. rapv-mcp 로그에 `배포 전 점검 … 통과` 후 서버
+     있으므로 쓰지 않는다. 서비스 간 통신은 rapv-mcp 가 공개여도 내부
+     네트워크 주소를 유지한다.
+4. 두 서비스의 **Environment 에 같은 `MCP_AUTH_TOKEN` 값을 입력**한다
+   (`openssl rand -hex 24` 등으로 생성, 커밋 금지).
+5. **Apply** → 빌드·배포가 돈다. rapv-mcp 로그에 `배포 전 점검 … 통과` 후 서버
    기동, rapv-assistant 로그에 `MCP 연결` 통과가 보이면 정상.
-5. 발급된 URL(`https://rapv-assistant-xxxx.onrender.com`)에 접속 → 챗 UI 가 뜬다.
+6. 발급된 URL(`https://rapv-assistant-xxxx.onrender.com`)에 접속 → 챗 UI 가 뜬다.
 
-> 기존 단일 서비스로 쓰던 Blueprint 를 갱신하는 경우, 대시보드에서 Blueprint
-> Sync 를 한 번 돌려 rapv-mcp 서비스가 새로 생성되는지 확인한다. `/health` 의
-> `mcp.status` 가 `ok` 면 내부 연결까지 정상이다.
+> **pserv → web 전환 주의**: Render 서비스 타입은 생성 후 변경이 불가하다.
+> 기존에 rapv-mcp 를 private service 로 만들었다면 대시보드에서 **삭제 후
+> Blueprint sync** 로 web 재생성한다(삭제 → 다음 push 또는 Manual Sync).
+>
+> MCP 서버를 외부에 열 필요가 없으면 `render.yaml` 에서 rapv-mcp 를
+> `type: pserv` 로 되돌리고 인증 env 두 개를 빼면 된다 — 내부 전용이 더
+> 보수적인 기본값이다.
+
+**외부 MCP 클라이언트 원격 연결** (Claude Desktop): 커넥터 UI 는 정적 Bearer
+토큰을 지원하지 않으므로 `mcp-remote` 프록시를 stdio 로 끼운다
+(`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "RAPV-Remote": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://rapv-mcp-xxxx.onrender.com/mcp",
+               "--header", "Authorization: Bearer <MCP_AUTH_TOKEN>"]
+    }
+  }
+}
+```
 
 ---
 

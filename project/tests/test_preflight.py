@@ -225,6 +225,17 @@ def test_smoke_catches_broken_history_block_masking(monkeypatch):
     assert any("블록 표기" in p for p in problems)
 
 
+def test_config_check_catches_unauthenticated_public_mcp(monkeypatch):
+    """공개 배포 인증 가드 — MCP_REQUIRE_AUTH=1 인데 토큰이 비면 기동 거부.
+    공개 web 서비스에서 토큰이 실수로 지워져도 무인증 공개 상태로 조용히
+    돌아가지 않게 하는 fail-closed 가드다."""
+    monkeypatch.setattr(config, "MCP_REQUIRE_AUTH", True)
+    monkeypatch.setattr(config, "MCP_AUTH_TOKEN", "")
+    assert any("MCP_AUTH_TOKEN" in p for p in preflight.check_config())
+    monkeypatch.setattr(config, "MCP_AUTH_TOKEN", "sekrit")
+    assert not any("MCP_AUTH_TOKEN" in p for p in preflight.check_config())
+
+
 def test_config_check_catches_contradictions(monkeypatch):
     """각 값은 유효해도 조합이 모순인 경우 — 조용한 품질 붕괴의 형태."""
     monkeypatch.setattr(config, "RERANK_TOP_N", 99)  # top_k(8)보다 큼

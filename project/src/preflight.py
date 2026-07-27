@@ -169,6 +169,14 @@ _GATE_SELF_TESTS: tuple[dict, ...] = (
 def check_config() -> list[str]:
     """하이퍼파라미터 간 불변식 — 값 각각이 아니라 '조합'의 모순을 잡는다."""
     problems: list[str] = []
+    # 공개 배포 인증 가드 — MCP 서버를 공개 URL 로 여는 배포(MCP_REQUIRE_AUTH=1)
+    # 에서 토큰이 비면 '무인증 공개 서버'라는 조용한 보안 결함이 된다. 값 각각은
+    # 유효한 조합 모순이므로 여기서 잡는다(다른 불변식과 같은 계열).
+    if config.MCP_REQUIRE_AUTH and not config.MCP_AUTH_TOKEN:
+        problems.append(
+            "MCP_REQUIRE_AUTH=1 인데 MCP_AUTH_TOKEN 이 비어 있다 — 공개 MCP 서버를"
+            " 무인증으로 열 수 없다(토큰을 설정하거나 공개 가드를 끌 것)"
+        )
     if not (0 < config.CHUNK_OVERLAP < config.CHUNK_SIZE):
         problems.append(
             f"CHUNK_OVERLAP({config.CHUNK_OVERLAP})은 0보다 크고 CHUNK_SIZE({config.CHUNK_SIZE})보다 작아야 한다"
@@ -520,7 +528,7 @@ def check_mcp_reachable(timeout_s: float = 60.0) -> list[str]:
     }
 
     async def _probe() -> set[str]:
-        async with Client(config.MCP_SERVER_URL) as c:
+        async with Client(config.MCP_SERVER_URL, auth=config.MCP_AUTH_TOKEN or None) as c:
             return {t.name for t in await c.list_tools()}
 
     deadline = _time.monotonic() + timeout_s
