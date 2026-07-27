@@ -12,8 +12,10 @@ GC 'Hey.GC 2.0'가 MCP 구조로 사내 시스템을 통합하는 것과 동일�
   - Prompts:   pv_case_intake  (케이스 처리 SOP — 클라이언트 무관 동일 절차)
 
 이 서버는 두 가지로 사용된다.
-  (1) 독립 실행:  python -m src.mcp_server.server   (stdio transport, Claude Desktop/Cursor 연결)
-  (2) 인메모리:   에이전트가 fastmcp.Client(mcp) 로 직접 연결 (본 데모 기본값)
+  (1) stdio:  python -m src.mcp_server.server   (Claude Desktop/Cursor 연결)
+  (2) HTTP:   python -m src.mcp_server.server --transport http --port 8001
+              — 에이전트·API 가 fastmcp.Client(MCP_SERVER_URL) 로 원격 연결(운영 기본값,
+              완전 분리 구조: docker-compose.yml 의 mcp 서비스 / Render 의 rapv-mcp)
 
 도구의 '이름·설명(docstring)·타입힌트'가 곧 LLM에게 주는 사용설명서다.
 FDE의 실력은 여기서 드러난다 — 에이전트가 언제 어떤 도구를 쓸지 이 설명으로 판단한다.
@@ -428,7 +430,35 @@ def list_regulation_documents() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# 헬스체크 (HTTP transport 전용 custom route — stdio 모드에는 노출되지 않는다)
+# ---------------------------------------------------------------------------
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):  # noqa: ANN001 - starlette Request
+    """컨테이너 오케스트레이션(compose healthcheck·preflight) 용 준비 상태 응답.
+
+    _get_pipeline() 이 완료된 뒤에만 200 — RAG 인덱스 구축 완료가 곧 준비 완료다.
+    """
+    from starlette.responses import JSONResponse
+
+    p = _get_pipeline()
+    return JSONResponse({"status": "ok", "rag": {"docs": p.n_docs, "chunks": p.n_chunks}})
+
+
 if __name__ == "__main__":
-    # 독립 실행: stdio 트랜스포트로 MCP 서버 구동 (Claude Desktop/Cursor 등에서 연결 가능)
-    _get_pipeline()  # 인덱스 미리 구축
-    mcp.run()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="RAPV-Assistant MCP 서버")
+    parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8001)
+    args = parser.parse_args()
+
+    _get_pipeline()  # 인덱스 미리 구축 (헬스체크가 준비 완료 후에만 200 을 주도록)
+    if args.transport == "http":
+        # allowed_hosts=["*"]: fastmcp 의 Host 헤더 가드는 기본이 loopback 전용이라
+        # compose/Render 내부 호스트명(예: mcp:8001)의 요청이 421 로 거절된다.
+        # 이 서버는 내부 네트워크 전용(호스트 미공개)이므로 전체 허용이 안전하다.
+        mcp.run(transport="http", host=args.host, port=args.port, allowed_hosts=["*"])
+    else:
+        mcp.run()  # stdio — Claude Desktop/Cursor 연결(종전과 동일)

@@ -29,7 +29,9 @@ FDE가 시스템을 고객사에 배치할 때 가장 먼저 깨지는 것은 �
 통과해야 서버를 띄운다(운영 중 경고 부착과 달리, 배포 시점은 차단이 옳다:
 아직 사용자가 없으므로 시끄럽게 멈추는 비용이 0이다).
 
-실행:  python -m src.preflight
+실행:  python -m src.preflight                # 전 그룹(로컬 개발·CI)
+       python -m src.preflight --role mcp     # MCP 서버 컨테이너 게이트
+       python -m src.preflight --role api     # API 컨테이너 게이트(MCP 연결 대기 포함)
 """
 from __future__ import annotations
 
@@ -500,21 +502,73 @@ def smoke_checks() -> list[str]:
     return problems
 
 
-def run_preflight() -> dict[str, list[str]]:
-    """전 그룹을 실행해 {그룹명: 문제 목록} 을 반환한다(빈 목록 = 통과)."""
-    return {
-        "설정 불변식": check_config(),
-        "코퍼스 무결성": check_corpus(),
-        "업무 데이터 스키마": check_tasks(),
-        "스모크(canary)": smoke_checks(),
+def check_mcp_reachable(timeout_s: float = 60.0) -> list[str]:
+    """API 롤 전용 — 분리된 MCP 서버 기동을 기다린 뒤 도구 6종 노출까지 실연결로 검증.
+
+    완전 분리 구조에서 API 컨테이너의 가장 흔한 Day-0 실패는 코드가 아니라
+    'MCP 서버가 아직 안 떴다/URL 이 틀렸다'이다 — wait-loop 로 기동 순서를
+    흡수하고, list_tools 실왕복으로 도구 계약까지 확인한다.
+    """
+    import asyncio
+    import time as _time
+
+    from fastmcp import Client
+
+    expected = {
+        "search_regulations", "get_ra_deadlines", "get_submission_checklist",
+        "assess_adverse_event", "draft_ae_report", "list_regulation_documents",
     }
+
+    async def _probe() -> set[str]:
+        async with Client(config.MCP_SERVER_URL) as c:
+            return {t.name for t in await c.list_tools()}
+
+    deadline = _time.monotonic() + timeout_s
+    last = ""
+    while _time.monotonic() < deadline:
+        try:
+            missing = expected - asyncio.run(_probe())
+            return [f"MCP 서버 도구 누락: {sorted(missing)}"] if missing else []
+        except Exception as e:  # noqa: BLE001 - 기동 대기 중 연결 실패는 재시도
+            last = type(e).__name__
+            _time.sleep(2)
+    return [f"MCP 서버({config.MCP_SERVER_URL}) 연결 실패 — 마지막 오류: {last}"]
+
+
+def run_preflight(role: str = "all") -> dict[str, list[str]]:
+    """롤별 그룹을 실행해 {그룹명: 문제 목록} 을 반환한다(빈 목록 = 통과).
+
+    완전 분리 배포에서 점검 책임이 프로세스별로 갈린다:
+      - all (기본): 종전과 동일 — 단일 환경(로컬 개발·CI)에서 전 그룹 자체 실행
+      - mcp: MCP 서버 컨테이너 — 코퍼스·스모크(파이프라인은 이 프로세스 소유)
+      - api: API 컨테이너 — 자기 데이터(ra_tasks.json) + MCP 서버 실연결 대기
+    """
+    checks: dict[str, list[str]] = {"설정 불변식": check_config()}
+    if role in ("all", "mcp"):
+        checks["코퍼스 무결성"] = check_corpus()
+    if role in ("all", "api"):
+        checks["업무 데이터 스키마"] = check_tasks()
+    if role in ("all", "mcp"):
+        checks["스모크(canary)"] = smoke_checks()
+    if role == "api":
+        checks["MCP 연결"] = check_mcp_reachable()
+    return checks
 
 
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="배포 전 점검(preflight)")
+    parser.add_argument(
+        "--role", choices=["all", "api", "mcp"], default="all",
+        help="점검 롤 — all(기본: 전 그룹) | mcp(코퍼스·스모크) | api(업무 데이터·MCP 연결)",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
-    print("배포 전 점검 (preflight) — 데이터·설정·스모크·게이트 자가 테스트")
+    print(f"배포 전 점검 (preflight, role={args.role}) — 데이터·설정·스모크·게이트 자가 테스트")
     print("=" * 60)
-    report = run_preflight()
+    report = run_preflight(role=args.role)
     n_problems = 0
     for group, problems in report.items():
         mark = "✓" if not problems else "✗"

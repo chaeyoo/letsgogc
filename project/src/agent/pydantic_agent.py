@@ -4,9 +4,9 @@
 루프를, 같은 계약 그대로 PydanticAI 프레임워크 위에서 실행하는 병렬 구현이다.
 두 백엔드는 항상 같은 것을 보장해야 한다:
 
-  - 도구는 MCP 를 통해 호출한다 — `MCPToolset` 이 인메모리 FastMCP 서버
-    (src/mcp_server/server.py 의 `mcp`)에 직접 붙으므로, 도구 이름·설명·스키마의
-    출처가 direct 백엔드와 동일하다(스키마 이중 유지 없음).
+  - 도구는 MCP 를 통해 호출한다 — `MCPToolset` 이 direct 백엔드와 같은
+    MCP_SERVER_URL(별도 프로세스의 HTTP MCP 서버)에 붙으므로, 도구
+    이름·설명·스키마의 출처가 direct 백엔드와 동일하다(스키마 이중 유지 없음).
   - 도구 호출 1건마다의 북키핑(신뢰 소스·출처·grounded·이력 허용 집합)은
     `process_tool_call` 훅에서 direct 루프 본문과 같은 헬퍼로 수행한다.
   - 모든 답변은 direct 백엔드와 동일 인자로 `_finalize()` 검증 게이트를 지난다.
@@ -29,7 +29,6 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 from pydantic_ai.usage import UsageLimits
 
 from .. import config
-from ..mcp_server.server import mcp
 from ..observability import Trace, flow, timed
 from .agent import (
     SYSTEM_PROMPT,
@@ -83,7 +82,7 @@ async def _process_tool_call(
     deps = ctx.deps
     flow(
         "_process_tool_call()",
-        "PydanticAI 의 도구 실행 요청 — 실행은 MCPToolset 이 인메모리 FastMCP 로 대신한다",
+        "PydanticAI 의 도구 실행 요청 — 실행은 MCPToolset 이 HTTP MCP 서버로 대신한다",
         tool=name, args=dict(tool_args),
         next="call_tool() — 성공 출력은 신뢰 소스로 축적, 실패는 ModelRetry 로 모델에 되먹임",
     )
@@ -134,8 +133,9 @@ def _build_model():
 
 def _build_agent() -> Agent[PaDeps, str]:
     """호출마다 toolset+Agent 를 새로 만든다 — direct 백엔드가 호출마다
-    `Client(mcp)` 를 여는 것과 동형(이벤트 루프 간 세션 공유 없음)."""
-    toolset = MCPToolset(mcp, process_tool_call=_process_tool_call)
+    `Client(MCP_SERVER_URL)` 를 여는 것과 동형(이벤트 루프 간 세션 공유 없음).
+    URL 은 호출 시점에 읽는다 — 테스트 하니스가 세션 중 URL 을 주입한다."""
+    toolset = MCPToolset(config.MCP_SERVER_URL, process_tool_call=_process_tool_call)
     return Agent(
         deps_type=PaDeps,
         instructions=SYSTEM_PROMPT,
@@ -181,7 +181,7 @@ async def chat_llm_pydantic(message: str, history: list[dict], trace: Trace) -> 
     deps = PaDeps(trace=trace)
     flow(
         "chat_llm_pydantic()",
-        "PydanticAI 백엔드 시작 — MCPToolset(인메모리 FastMCP)+UsageLimits 로 tool-use 루프를 프레임워크에 위임",
+        "PydanticAI 백엔드 시작 — MCPToolset(HTTP MCP 서버)+UsageLimits 로 tool-use 루프를 프레임워크에 위임",
         model=config.LLM_MODEL, request_limit=MAX_LLM_REQUESTS,
         next="agent.run() — 도구 호출마다 _process_tool_call 훅이 신뢰 소스를 축적한다",
     )
@@ -220,7 +220,8 @@ async def chat_llm_pydantic(message: str, history: list[dict], trace: Trace) -> 
         answer = (
             f"(LLM API 호출에 실패했습니다: {type(e).__name__}. "
             "ANTHROPIC_API_KEY 가 유효한지, 네트워크와 LLM_MODEL 설정을 "
-            "확인해 주세요. 키를 비우면 오프라인 모드로 동작합니다.)"
+            "확인해 주세요. MCP 서버 연결 실패일 수도 있습니다 — MCP_SERVER_URL 과 "
+            "MCP 서버 프로세스 기동 상태도 확인해 주세요. 키를 비우면 오프라인 모드로 동작합니다.)"
         )
         flow(
             "chat_llm_pydantic()",

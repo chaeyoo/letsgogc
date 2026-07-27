@@ -23,7 +23,7 @@ RA·PV 어시스턴트의 LLM 모드에는 같은 일을 하는 두 개의 구�
 | direct 백엔드에서 직접 짠 코드 | pydantic_ai 백엔드에서는 |
 |---|---|
 | **에이전트 루프** — `for step in range(6):` 안에서 Claude 응답을 받고, "도구를 불러달라"(stop_reason=tool_use)인지 "답변 확정"인지 분기하고, 도구 결과를 tool_result 블록으로 포장해 대화록에 붙여 재호출 | **`agent.run()` 한 줄.** 루프가 프레임워크 안에 있다 |
-| **스키마 변환기** — MCP 도구 스키마를 Anthropic tools 포맷으로 바꾸는 `_to_anthropic_tools()` | **불필요.** `MCPToolset` 이 인메모리 FastMCP 서버를 그대로 읽는다 — 변환 코드 자체가 없다 |
+| **스키마 변환기** — MCP 도구 스키마를 Anthropic tools 포맷으로 바꾸는 `_to_anthropic_tools()` | **불필요.** `MCPToolset` 이 MCP 서버(HTTP)의 스키마를 그대로 읽는다 — 변환 코드 자체가 없다 |
 | **에러 재시도 배선** — 도구 실패를 `is_error=True` 로 모델에 되먹여 자가 정정을 유도 | **자동.** `ToolError`→`ModelRetry` 변환이 내장, 설정 하나(`retries=2`)로 끝 |
 | **테스트 대역** — 가짜 anthropic 모듈을 손수 만들어 `sys.modules` 에 주입·유지 | **공식 제공.** `TestModel`/`FunctionModel` 로 API 키 없이 전 경로 테스트 |
 

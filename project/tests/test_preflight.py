@@ -19,6 +19,22 @@ def test_repo_data_passes_preflight():
     assert all(not problems for problems in report.values()), report
 
 
+def test_preflight_role_group_composition():
+    """롤별 점검 그룹 분담 — 완전 분리 배포에서 각 컨테이너가 자기 책임만 진다.
+
+    mcp 롤은 원격 연결 점검이 없어야 하고(자기 자신이 서버), api 롤은 파이프
+    라인을 소유하지 않으므로 코퍼스·스모크가 없어야 한다. 그룹 구성만 고정한다
+    — api 롤의 'MCP 연결' 실행 자체는 conftest 가 띄운 실서버로 검증한다."""
+    mcp_groups = set(preflight.run_preflight(role="mcp"))
+    assert "MCP 연결" not in mcp_groups
+    assert {"코퍼스 무결성", "스모크(canary)"} <= mcp_groups
+
+    api_report = preflight.run_preflight(role="api")
+    assert "MCP 연결" in api_report
+    assert not api_report["MCP 연결"], api_report["MCP 연결"]  # conftest 의 실서버에 실연결 성공
+    assert {"코퍼스 무결성", "스모크(canary)"}.isdisjoint(api_report)
+
+
 def _write_doc(dirpath: Path, name: str, meta: dict, body: str = "본문 내용") -> None:
     fm = "\n".join(f"{k}: {v}" for k, v in meta.items())
     (dirpath / name).write_text(f"---\n{fm}\n---\n\n{body}\n", encoding="utf-8")

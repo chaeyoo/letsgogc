@@ -803,13 +803,17 @@ primitive 는 다음과 같다.
   search_regulations 를 사용하라'는 경계 안내가 들어 있다."
 - **관련**: Function Calling, 스키마(0부)
 
-### stdio / 인메모리 (MCP 전송 방식)
-MCP 클라이언트와 서버가 연결되는 방식이다. **인메모리**는 같은 프로세스 안에서 직접
-연결하는 방식으로 이 데모의 기본값이고(`fastmcp.Client(mcp)`), **stdio**는 표준
-입출력 스트림으로 별도 프로세스와 통신하는 방식으로 외부 클라이언트(Claude Desktop·
-Cursor) 연결에 쓰인다(`python -m src.mcp_server.server`). stdio 단독 사용에서는 도구
-인자가 에이전트 입구를 거치지 않고 외부에서 직접 들어온다 — PII 마스킹을 에이전트
-입구만이 아니라 도구 계층에서도 해야 하는 이유(심층방어, 4부)가 이 경로에서 나온다.
+### stdio / HTTP / 인메모리 (MCP 전송 방식)
+MCP 클라이언트와 서버가 연결되는 방식이다. **streamable HTTP**는 별도 프로세스로 뜬
+서버에 HTTP 로 연결하는 방식으로 이 데모의 운영 기본값이고
+(`fastmcp.Client(MCP_SERVER_URL)` ↔ `python -m src.mcp_server.server --transport http`),
+**stdio**는 표준 입출력 스트림으로 별도 프로세스와 통신하는 방식으로 외부 클라이언트
+(Claude Desktop·Cursor) 연결에 쓰인다(`python -m src.mcp_server.server`). **인메모리**는
+같은 프로세스 안에서 서버 객체에 직접 연결하는 방식(`fastmcp.Client(mcp)`)으로,
+전송 계층 없이도 메시지는 MCP 규격 그대로라 테스트·프로토타입에 쓰인다. stdio 단독
+사용에서는 도구 인자가 에이전트 입구를 거치지 않고 외부에서 직접 들어온다 — PII
+마스킹을 에이전트 입구만이 아니라 도구 계층에서도 해야 하는 이유(심층방어, 4부)가
+이 경로에서 나온다.
 - **관련**: 클라이언트/서버(0부), 심층방어(4부)
 
 ### FastAPI / uvicorn / lifespan

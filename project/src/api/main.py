@@ -2,7 +2,7 @@
 
 엔드포인트:
   GET  /            → 웹 챗 UI (single page)
-  GET  /health      → 실행 모드/인덱스 상태 + 검증 게이트 경고율 계기판
+  GET  /health      → 실행 모드/MCP 서버·인덱스 상태 + 검증 게이트 경고율 계기판
   POST /chat        → 사용자 메시지 → 에이전트 응답(+도구호출·출처)
   GET  /api/deadlines → 대시보드용 마감일 (부가)
   GET  /dictionary  → 용어 사전 플래시카드 (description/dictionary.html, self-contained)
@@ -20,22 +20,44 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+import httpx
+
 from .. import config
 from ..agent.agent import RaAgent
-from ..mcp_server.server import _get_pipeline
 from ..observability import flow, flow_reset, gate_stats
 from ..ra.tasks import load_ra_tasks
 
 agent = RaAgent()
 
 
+async def _mcp_status() -> dict:
+    """분리된 MCP 서버의 /health 를 조회한다(3초 타임아웃).
+
+    RAG 인덱스는 이제 MCP 서버 프로세스가 소유한다 — API 는 상태를 조회만 한다.
+    도달 불가는 예외 대신 상태 dict 로 흡수한다(fail-closed 게이트는
+    preflight --role api 가 담당, 여기서는 관측만).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.MCP_SERVER_HEALTH_URL)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - 도달 불가는 상태로 표현
+        return {"status": "unreachable", "error": type(e).__name__}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 부팅 시 RAG 인덱스 구축(무거운 초기화 1회)
-    p = _get_pipeline()
-    app.state.pipeline_info = {"docs": p.n_docs, "chunks": p.n_chunks}
+    # 완전 분리: RAG 인덱스는 MCP 서버 프로세스가 부팅 시 구축한다.
+    # API 는 연결 상태만 확인해 로그로 남긴다(비치명 — 기동 순서 게이트는 preflight).
+    info = await _mcp_status()
+    app.state.mcp_info = info
     print(config.mode_banner())
-    print(f"[RAG] 문서 {p.n_docs}건 · 청크 {p.n_chunks}개 인덱싱 완료")
+    if info.get("status") == "ok":
+        rag = info.get("rag", {})
+        print(f"[MCP] {config.MCP_SERVER_URL} 연결 확인 · 문서 {rag.get('docs')}건 · 청크 {rag.get('chunks')}개")
+    else:
+        print(f"[MCP] {config.MCP_SERVER_URL} 도달 불가({info.get('error')}) — degraded 상태로 기동")
     yield
 
 
@@ -61,13 +83,15 @@ class ChatResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    p = _get_pipeline()
+    mcp_info = await _mcp_status()
     return JSONResponse(
         {
-            "status": "ok",
+            # MCP 서버 도달 불가면 degraded — 라우팅(200)은 유지하되 상태를 드러낸다.
+            "status": "ok" if mcp_info.get("status") == "ok" else "degraded",
             "mode": "llm" if config.LLM_AVAILABLE else "offline",
             "banner": config.mode_banner(),
-            "rag": {"docs": p.n_docs, "chunks": p.n_chunks},
+            "rag": mcp_info.get("rag", {}),
+            "mcp": {"url": config.MCP_SERVER_URL, "status": mcp_info.get("status")},
             "rag_params": {
                 "chunk_size": config.CHUNK_SIZE,
                 "chunk_overlap": config.CHUNK_OVERLAP,

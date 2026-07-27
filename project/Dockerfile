@@ -16,8 +16,10 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-# 기동 게이트: 배포 전 점검(preflight) 통과 후에만 서버 시작(run.sh 와 동일 규율 —
-# 데이터·설정·안전장치 자가 테스트가 실패하면 컨테이너가 뜨지 않는다). 플랫폼이
-# 주입하는 $PORT 로 0.0.0.0 바인딩(없으면 8000). 오프라인 모드가 기본이며, LLM
-# 모드는 ANTHROPIC_API_KEY 환경변수를 줄 때만 활성화된다.
-CMD ["sh", "-c", "python -m src.preflight && exec uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# 기본 CMD = API 롤. 완전 분리 구조라 MCP_SERVER_URL 이 실행 중인 MCP 서버를
+# 가리켜야 한다(docker-compose.yml 의 mcp 서비스가 같은 이미지에서 command 로
+# MCP 롤을 기동한다). 기동 게이트: preflight --role api 는 자기 데이터 점검 후
+# MCP 서버 실연결(도구 6종 노출)까지 기다린다 — 실패하면 컨테이너가 뜨지 않는다.
+# 플랫폼이 주입하는 $PORT 로 0.0.0.0 바인딩(없으면 8000). 오프라인 모드가 기본,
+# LLM 모드는 ANTHROPIC_API_KEY 환경변수를 줄 때만 활성화된다.
+CMD ["sh", "-c", "python -m src.preflight --role api && exec uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
