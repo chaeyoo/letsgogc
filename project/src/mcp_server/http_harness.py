@@ -17,13 +17,16 @@ from .server import mcp
 
 
 @contextmanager
-def run_mcp_http_server(host: str = "127.0.0.1") -> Iterator[str]:
+def run_mcp_http_server(host: str = "127.0.0.1", server_obj=None) -> Iterator[str]:
     """MCP HTTP 서버를 백그라운드 스레드로 기동하고 접속 URL 을 yield 한다.
 
     port=0 → OS 가 빈 포트를 할당(테스트 병렬 실행 충돌 방지).
+    server_obj: 기본은 프로덕션 서버(mcp) — 인증 등 다른 구성의 FastMCP 인스턴스를
+    검증하는 테스트만 별도 서버를 넘긴다.
     """
+    app = (server_obj or mcp).http_app()
     server = uvicorn.Server(
-        uvicorn.Config(mcp.http_app(), host=host, port=0, log_level="error", lifespan="on")
+        uvicorn.Config(app, host=host, port=0, log_level="error", lifespan="on")
     )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

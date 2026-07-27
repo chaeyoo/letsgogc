@@ -61,9 +61,10 @@ def _mcp_client() -> Client:
     """MCP 서버 HTTP 클라이언트를 만든다.
 
     완전 분리 구조: 프로덕션 에이전트는 항상 MCP_SERVER_URL(HTTP)로 붙는다.
+    MCP_AUTH_TOKEN 이 설정돼 있으면 Bearer 헤더로 자동 부착한다(공개 서버 배포용).
     config 속성은 호출 시점에 읽는다 — 테스트 하니스가 세션 중 URL 을 주입한다.
     """
-    return Client(config.MCP_SERVER_URL)
+    return Client(config.MCP_SERVER_URL, auth=config.MCP_AUTH_TOKEN or None)
 
 
 SYSTEM_PROMPT = (

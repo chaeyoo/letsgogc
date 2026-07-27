@@ -10,6 +10,8 @@ services:
   mcp:
     build: ./project
     command: sh -c "python -m src.preflight --role mcp && exec python -m src.mcp_server.server --transport http --host 0.0.0.0 --port 8001"
+    environment:
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-}         # 비우면 무인증(내부 전용이라 안전)
     expose:
       - "8001"            # 내부 네트워크 전용 — 호스트로 포트를 열지 않는다
     healthcheck:
@@ -25,6 +27,7 @@ services:
     command: sh -c "python -m src.preflight --role api && exec uvicorn src.api.main:app --host 0.0.0.0 --port 8000"
     environment:
       - MCP_SERVER_URL=http://mcp:8001/mcp
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-}         # mcp 서비스와 같은 값이면 Bearer 부착
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}   # 비우면 오프라인 모드
       - AGENT_BACKEND=${AGENT_BACKEND:-direct}
     ports:

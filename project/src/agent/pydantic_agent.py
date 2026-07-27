@@ -38,6 +38,7 @@ from .agent import (
     _finalize,
     _has_evidence,
     _is_contract_error,
+    _mcp_client,
     _question_context,
     _split_user_facts,
     _stringify,
@@ -134,8 +135,9 @@ def _build_model():
 def _build_agent() -> Agent[PaDeps, str]:
     """호출마다 toolset+Agent 를 새로 만든다 — direct 백엔드가 호출마다
     `Client(MCP_SERVER_URL)` 를 여는 것과 동형(이벤트 루프 간 세션 공유 없음).
-    URL 은 호출 시점에 읽는다 — 테스트 하니스가 세션 중 URL 을 주입한다."""
-    toolset = MCPToolset(config.MCP_SERVER_URL, process_tool_call=_process_tool_call)
+    클라이언트는 direct 백엔드와 같은 헬퍼(_mcp_client)로 만든다 — URL·인증
+    토큰이 호출 시점의 config 에서 나와 두 백엔드가 항상 같은 서버에 붙는다."""
+    toolset = MCPToolset(_mcp_client(), process_tool_call=_process_tool_call)
     return Agent(
         deps_type=PaDeps,
         instructions=SYSTEM_PROMPT,
