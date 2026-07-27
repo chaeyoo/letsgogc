@@ -20,10 +20,14 @@ DICTIONARY_HTML = DESCRIPTION_DIR / "dictionary.html"
 BLANK_HTML = DESCRIPTION_DIR / "blank.html"
 
 # MCP 서버(HTTP) 연결 URL — 에이전트·API 는 항상 이 URL 로 도구를 호출한다(완전 분리).
-# Render 는 fromService 로 host:port 만 주입할 수 있어 MCP_SERVER_HOSTPORT 가 있으면 우선한다.
-_hostport = os.environ.get("MCP_SERVER_HOSTPORT", "").strip()
+# Render 는 fromService 로 호스트명만 주입한다(MCP_SERVER_HOST) — host 속성은 서비스
+# 생성 즉시 확정되는 정적 값이라 이것을 쓴다. hostport/port 속성은 대상 서비스의
+# '열린 포트 감지'에 의존해 첫 sync 시점에 빈 값이 들어올 수 있다(실배포에서 확인).
+# 포트는 우리 startCommand 가 8001 로 고정하므로 감지에 기댈 이유가 없다.
+_host = os.environ.get("MCP_SERVER_HOST", "").strip()
+_port = os.environ.get("MCP_SERVER_PORT", "8001").strip()
 MCP_SERVER_URL = (
-    f"http://{_hostport}/mcp" if _hostport
+    f"http://{_host}:{_port}/mcp" if _host
     else os.environ.get("MCP_SERVER_URL", "http://127.0.0.1:8001/mcp").strip()
 )
 # 헬스체크 URL — /mcp 엔드포인트와 같은 서버의 custom route

@@ -35,13 +35,17 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.15"
-      # MCP 서버 내부 주소 — Render 가 rapv-mcp 의 host:port 를 주입하고,
-      # src/config.py 가 http://{host:port}/mcp 로 조립한다.
-      - key: MCP_SERVER_HOSTPORT
+      # MCP 서버 내부 주소 — Render 가 rapv-mcp 의 내부 호스트명을 주입하고,
+      # src/config.py 가 http://{host}:{port}/mcp 로 조립한다. hostport/port
+      # 속성은 '열린 포트 감지' 뒤에야 채워져 첫 sync 에 빈 값이 될 수 있으므로,
+      # 정적인 host 속성 + startCommand 와 동일한 고정 포트(8001)를 쓴다.
+      - key: MCP_SERVER_HOST
         fromService:
           type: pserv
           name: rapv-mcp
-          property: hostport
+          property: host
+      - key: MCP_SERVER_PORT
+        value: "8001"
       # LLM 모드(면접 라이브 시연 등)가 필요하면 Render 대시보드 → Environment 에서
       # 아래를 직접 추가한다. 값은 절대 커밋하지 말 것. 공개 URL 에 키를 넣으면
       # 방문자가 API 비용을 태우므로, 통제된 시연에만 임시로 켜는 것을 권장한다.

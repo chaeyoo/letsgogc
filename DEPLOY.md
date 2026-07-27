@@ -47,8 +47,11 @@ MCP_SERVER_URL=http://127.0.0.1:8001/mcp sh -c \
    - **rapv-mcp** (private service) — `preflight --role mcp` 통과 후 MCP HTTP 서버
      기동(RAG 인덱스 구축). 내부 네트워크 전용, 공개 URL 없음.
    - **rapv-assistant** (web) — `preflight --role api` 가 MCP 서버 실연결(도구 6종
-     노출)까지 확인한 뒤 uvicorn 기동. MCP 주소는 `MCP_SERVER_HOSTPORT` 로
-     `fromService` 자동 주입된다(코드의 `src/config.py` 가 URL 로 조립).
+     노출)까지 확인한 뒤 uvicorn 기동. MCP 호스트명은 `MCP_SERVER_HOST` 로
+     `fromService`(property: host) 자동 주입되고, 포트는 8001 고정 —
+     코드의 `src/config.py` 가 URL 로 조립한다. `hostport`/`port` 속성은
+     대상 서비스의 '열린 포트 감지' 뒤에야 채워져 첫 sync 에 빈 값이 될 수
+     있으므로 쓰지 않는다.
 4. **Apply** → 빌드·배포가 돈다. rapv-mcp 로그에 `배포 전 점검 … 통과` 후 서버
    기동, rapv-assistant 로그에 `MCP 연결` 통과가 보이면 정상.
 5. 발급된 URL(`https://rapv-assistant-xxxx.onrender.com`)에 접속 → 챗 UI 가 뜬다.
@@ -114,7 +117,7 @@ URL 뒤에 붙여 확인:
 | 증상 | 원인·해결 |
 |---|---|
 | 빌드는 됐는데 기동 실패 | 로그에 preflight 실패가 보이면 데이터·설정 결함 — 로컬에서 `python -m src.preflight` 로 재현·수정 후 재배포(이것이 fail-closed 게이트의 의도된 동작) |
-| api 가 `MCP 연결` 실패로 기동 중단 | MCP 서버가 아직 안 떴거나 주소가 틀림 — rapv-mcp(또는 mcp 컨테이너) 로그와 `MCP_SERVER_URL`/`MCP_SERVER_HOSTPORT` 를 확인. preflight 는 60초까지 기동을 기다린다 |
+| api 가 `MCP 연결` 실패로 기동 중단 | 실패 메시지의 '주소 출처'를 본다 — "환경변수 미주입"이면 플랫폼의 `MCP_SERVER_HOST`(또는 `MCP_SERVER_URL`) 주입 문제, 주입은 됐는데 실패면 rapv-mcp(또는 mcp 컨테이너)가 아직 안 떴거나 죽은 것 — 해당 서비스 로그 확인. preflight 는 60초까지 기동을 기다리고, Render 는 실패 시 자동 재시도한다 |
 | `/health` 가 `status: degraded` | API 는 떠 있는데 MCP 서버 도달 불가 — MCP 서비스 재시작·주소 확인 |
 | MCP 호출이 421 Misdirected Request | HTTP 기동 시 `allowed_hosts` 누락 — `src/mcp_server/server.py` 의 http 분기(`allowed_hosts=["*"]`)가 살아 있는지 확인 |
 | 404 / 앱이 안 뜸 | Root Directory 가 `project` 인지 확인(레포 루트가 아님) |

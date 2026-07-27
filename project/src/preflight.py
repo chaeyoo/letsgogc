@@ -532,7 +532,16 @@ def check_mcp_reachable(timeout_s: float = 60.0) -> list[str]:
         except Exception as e:  # noqa: BLE001 - 기동 대기 중 연결 실패는 재시도
             last = type(e).__name__
             _time.sleep(2)
-    return [f"MCP 서버({config.MCP_SERVER_URL}) 연결 실패 — 마지막 오류: {last}"]
+    # 실패 시 '주소가 어디서 왔는지'까지 진단한다 — 실배포의 최빈 원인은 연결
+    # 자체가 아니라 주소 주입 실패(플랫폼 env 미주입 → 로컬 기본값 폴백)였다.
+    env_src = (
+        "MCP_SERVER_HOST 환경변수" if os.environ.get("MCP_SERVER_HOST", "").strip()
+        else "MCP_SERVER_URL 환경변수" if os.environ.get("MCP_SERVER_URL", "").strip()
+        else "환경변수 미주입 → 로컬 기본값 폴백(플랫폼의 MCP 주소 주입이 누락된 신호)"
+    )
+    return [
+        f"MCP 서버({config.MCP_SERVER_URL}) 연결 실패 — 마지막 오류: {last} · 주소 출처: {env_src}"
+    ]
 
 
 def run_preflight(role: str = "all") -> dict[str, list[str]]:
