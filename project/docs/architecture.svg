@@ -57,9 +57,10 @@
 
   <!-- 3) Agent -->
   <rect x="380" y="324" width="300" height="92" rx="12" fill="#182a1f" stroke="#33c3a6" stroke-width="2"/>
-  <text x="530" y="352" fill="#e6edf3" font-size="16" font-weight="700" text-anchor="middle">🤖 RA·PV 에이전트</text>
-  <text x="530" y="374" fill="#a7d8cb" font-size="11.5" text-anchor="middle">입구 PII 마스킹 · Agentic Loop · Function Calling</text>
-  <text x="530" y="394" fill="#8aa0b4" font-size="11" text-anchor="middle">관찰 → 생각 → 도구호출 → 관찰 (최대 6스텝)</text>
+  <text x="530" y="348" fill="#e6edf3" font-size="16" font-weight="700" text-anchor="middle">🤖 RA·PV 에이전트</text>
+  <text x="530" y="368" fill="#a7d8cb" font-size="11.5" text-anchor="middle">입구 PII 마스킹 · Agentic Loop · Function Calling</text>
+  <text x="530" y="386" fill="#8aa0b4" font-size="11" text-anchor="middle">관찰 → 생각 → 도구호출 → 관찰 (최대 6스텝)</text>
+  <text x="530" y="404" fill="#8aa0b4" font-size="10.5" text-anchor="middle">백엔드 2종(동일 계약): AGENT_BACKEND = sdk(기본) | pydantic_ai</text>
 
   <!-- LLM box (right) -->
   <rect x="720" y="316" width="280" height="60" rx="12" fill="#16212e" stroke="#e0a458" stroke-width="1.5"/>
