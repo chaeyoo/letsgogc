@@ -33,6 +33,7 @@ import random
 
 import pytest
 
+# 서버 내부 단위 테스트 — 도구 함수를 직접 호출한다(HTTP 클라이언트 경로는 test_mcp/test_agent 가 커버)
 from src.mcp_server.server import assess_adverse_event, draft_ae_report
 from src.pv.redactor import redact
 from src.pv.report import build_report

@@ -19,6 +19,16 @@ DESCRIPTION_DIR = BASE_DIR / "description"
 DICTIONARY_HTML = DESCRIPTION_DIR / "dictionary.html"
 BLANK_HTML = DESCRIPTION_DIR / "blank.html"
 
+# MCP 서버(HTTP) 연결 URL — 에이전트·API 는 항상 이 URL 로 도구를 호출한다(완전 분리).
+# Render 는 fromService 로 host:port 만 주입할 수 있어 MCP_SERVER_HOSTPORT 가 있으면 우선한다.
+_hostport = os.environ.get("MCP_SERVER_HOSTPORT", "").strip()
+MCP_SERVER_URL = (
+    f"http://{_hostport}/mcp" if _hostport
+    else os.environ.get("MCP_SERVER_URL", "http://127.0.0.1:8001/mcp").strip()
+)
+# 헬스체크 URL — /mcp 엔드포인트와 같은 서버의 custom route
+MCP_SERVER_HEALTH_URL = MCP_SERVER_URL.rsplit("/mcp", 1)[0] + "/health"
+
 # LLM (Enterprise LLM API) 설정 — 있으면 사용, 없으면 오프라인 폴백
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-8")

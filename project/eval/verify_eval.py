@@ -365,7 +365,14 @@ def main() -> None:
     from eval.stats import fmt_ci
 
     res = evaluate()
-    e2e = asyncio.run(_e2e_pass_rate())
+    # E2E 는 에이전트 경로 — 완전 분리 구조에서 도구는 MCP_SERVER_URL(HTTP)로만
+    # 호출되므로, 하니스로 MCP 서버를 자체 기동해 같은 wire 를 태운다(도커 불필요).
+    # 메타모픽 evaluate() 는 순수 함수 계층이라 서버가 필요 없다 — 바깥에 둔다.
+    from src.mcp_server.http_harness import run_mcp_http_server
+
+    with run_mcp_http_server() as url:
+        config.MCP_SERVER_URL = url
+        e2e = asyncio.run(_e2e_pass_rate())
 
     def row(label: str, hits: int, n: int) -> str:
         return f"{label}: {fmt_ci(hits, n)}  (n={n})"

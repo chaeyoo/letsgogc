@@ -75,7 +75,13 @@ async def _run() -> dict:
 
 
 def main() -> None:
-    res = asyncio.run(_run())
+    # 완전 분리: 에이전트는 MCP_SERVER_URL(HTTP)로만 도구를 호출한다 — 평가도
+    # 같은 wire 를 태우도록 하니스로 MCP 서버를 자체 기동한다(도커 불필요).
+    from src.mcp_server.http_harness import run_mcp_http_server
+
+    with run_mcp_http_server() as url:
+        config.MCP_SERVER_URL = url
+        res = asyncio.run(_run())
     print("=" * 60)
     print("답변 신뢰성(faithfulness) 평가 · 오프라인 모드")
     print("=" * 60)

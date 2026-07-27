@@ -72,7 +72,7 @@
 
   <!-- arrow agent -> MCP (MCP protocol) -->
   <line x1="530" y1="416" x2="530" y2="470" stroke="#33c3a6" stroke-width="2.5" marker-end="url(#arwg)"/>
-  <text x="545" y="448" fill="#33c3a6" font-size="12" font-weight="600">MCP 프로토콜 (인메모리)</text>
+  <text x="545" y="448" fill="#33c3a6" font-size="12" font-weight="600">MCP 프로토콜 (HTTP · 별도 프로세스)</text>
 
   <!-- 4) MCP server -->
   <rect x="330" y="472" width="400" height="64" rx="12" fill="#132029" stroke="#33c3a6" stroke-width="2"/>

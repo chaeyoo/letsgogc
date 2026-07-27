@@ -14,13 +14,13 @@
 from __future__ import annotations
 
 import re
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
 from fastmcp import Client
 
 from .. import config
-from ..mcp_server.server import mcp
 from ..observability import Trace, flow, record_verification, timed
 from ..pv.coding import symptom_keywords
 from ..pv.redactor import redact
@@ -50,6 +50,21 @@ from ..verify.verifier import verify_answer, warning_text
 # 시행일 '시행 중 구판 부재'를 기동 전에 잡아 이 결합을 표면화한다).
 SCORE_FLOOR = 0.19       # 최상위 근거 관련도 하한
 COVERAGE_FLOOR = 0.28    # (확장)질의 토큰 커버리지 하한
+
+_MCP_UNAVAILABLE_MSG = (
+    "(MCP 서버에 연결하지 못했습니다: {}. MCP_SERVER_URL 설정과 MCP 서버 프로세스"
+    "(docker compose 의 mcp 서비스) 기동 상태를 확인해 주세요.)"
+)
+
+
+def _mcp_client() -> Client:
+    """MCP 서버 HTTP 클라이언트를 만든다.
+
+    완전 분리 구조: 프로덕션 에이전트는 항상 MCP_SERVER_URL(HTTP)로 붙는다.
+    config 속성은 호출 시점에 읽는다 — 테스트 하니스가 세션 중 URL 을 주입한다.
+    """
+    return Client(config.MCP_SERVER_URL)
+
 
 SYSTEM_PROMPT = (
     "당신은 제약회사 RA(인허가·규제업무)·PV(약물감시) 담당자를 돕는 어시스턴트다. "
@@ -338,18 +353,38 @@ class RaAgent:
         grounded_evidence = False
         user_facts: list[str] = []      # 도구 출력 속 '사용자가 서술한 사실'(case 에코) — 별도 계층
 
-        # MCP 서버에 연결한다 — 인자가 URL·실행 명령이 아니라 서버 '객체'(mcp)
-        # 라서 fastmcp 가 인메모리 transport 를 쓴다: 별도 프로세스·네트워크 없이
-        # 같은 프로세스 안에서 통신하되, 오가는 메시지(list_tools/call_tool)는
-        # 실제 MCP 규격 그대로다 — transport 만 바꾸면 원격 서버로 교체 가능.
-        async with Client(mcp) as mcp_client:
-            # 도구 6종의 이름·설명(docstring)·입력 스키마를 Anthropic tools
-            # 포맷으로 변환. 이 '설명'이 Claude 가 어떤 도구를 쓸지 판단하는
-            # 유일한 근거다.
-            tools = _to_anthropic_tools(await mcp_client.list_tools())
+        # MCP 서버에 연결한다 — 서버는 별도 프로세스(docker compose 의 mcp 서비스 /
+        # Render 의 rapv-mcp)로 떠 있고, MCP_SERVER_URL 로 streamable HTTP 연결한다.
+        # 오가는 메시지(list_tools/call_tool)는 MCP 규격 그대로다 — 인메모리
+        # 시절과 transport 만 다르다(완전 분리).
+        async with AsyncExitStack() as stack:
+            try:
+                mcp_client = await stack.enter_async_context(_mcp_client())
+                # 도구 6종의 이름·설명(docstring)·입력 스키마를 Anthropic tools
+                # 포맷으로 변환. 이 '설명'이 Claude 가 어떤 도구를 쓸지 판단하는
+                # 유일한 근거다.
+                tools = _to_anthropic_tools(await mcp_client.list_tools())
+            except Exception as e:  # noqa: BLE001 - 연결 실패는 명시적 안내로 흡수
+                # 연결·도구목록 확보 실패(서버 미기동·URL 오설정)는 크래시 대신
+                # '무엇을 확인하라'는 안내문으로 응답한다(LLM API 실패와 같은 규율).
+                flow(
+                    "_chat_llm()",
+                    "MCP 서버 연결 실패 — 크래시(HTTP 500) 대신 확인 안내문으로 응답(원인 타입만 노출)",
+                    error=type(e).__name__,
+                    next="_finalize() — 실패 안내문도 검증 게이트는 통과시켜 반환한다",
+                )
+                return _finalize(
+                    AgentResult(
+                        answer=_MCP_UNAVAILABLE_MSG.format(type(e).__name__),
+                        mode="llm",
+                        grounded=False,  # 실패 안내문 — 근거 보증이 아니다
+                    ),
+                    [],
+                    question=_question_context(message, history),
+                )
             flow(
                 "_chat_llm()",
-                "MCP 인메모리 연결·도구 목록 확보 — 이 이름·설명(docstring)이 Claude 의 도구 선택 근거",
+                "MCP HTTP 연결·도구 목록 확보 — 이 이름·설명(docstring)이 Claude 의 도구 선택 근거",
                 tools=[t["name"] for t in tools],
                 next="step 0 LLM 호출 — 이 도구 목록을 tools= 로 실어 Claude 에게 보낸다",
             )
@@ -554,7 +589,20 @@ class RaAgent:
         tool_calls: list[ToolCall] = []
         # 멀티턴: 짧은 후속질문("그럼 그건 며칠?")은 직전 사용자 발화와 병합해 맥락 복원
         resolved = _resolve_followup(message, history)
-        async with Client(mcp) as mcp_client:
+        async with AsyncExitStack() as stack:
+            try:
+                # LLM 모드와 동일한 HTTP 연결 — 오프라인 모드도 도구는 MCP 서버를 거친다.
+                mcp_client = await stack.enter_async_context(_mcp_client())
+            except Exception as e:  # noqa: BLE001 - 연결 실패는 명시적 안내로 흡수
+                return _finalize(
+                    AgentResult(
+                        answer=_MCP_UNAVAILABLE_MSG.format(type(e).__name__),
+                        mode="offline",
+                        grounded=False,  # 실패 안내문 — 근거 보증이 아니다
+                    ),
+                    [],
+                    question=resolved,
+                )
             intent = _route_intent(resolved)
             flow(
                 "_chat_offline()",

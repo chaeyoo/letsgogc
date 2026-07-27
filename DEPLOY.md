@@ -5,60 +5,78 @@
 
 ## 0. 먼저 알아둘 것
 
+- **2-프로세스 완전 분리 구조다.** MCP 서버(RAG 인덱스·도구 실행 소유)와
+  FastAPI(API·챗 UI)가 별도 프로세스로 뜨고, API 는 `MCP_SERVER_URL`(streamable
+  HTTP)로만 도구를 호출한다. 배포도 서비스 2개(또는 컨테이너 2개)로 올린다.
 - **오프라인 모드로 배포한다(권장).** API 키 없이도 RAG·PV·검증 전 기능이 동작한다.
   공개 URL 에 `ANTHROPIC_API_KEY` 를 넣으면 **방문자가 당신의 API 비용을 태우므로**
   넣지 않는다. LLM 모드는 면접 라이브 시연처럼 통제된 상황에서만 임시로 켠다(§4).
-- 이 앱은 **오래 사는 서버**다(부팅 시 1회 RAG 인덱싱 + 인메모리 계기판). 그래서
-  서버리스(Vercel)보다 **영속 프로세스/컨테이너 호스트(Render·Railway·Fly)** 가 맞다.
-- 리포에 배포 파일이 들어 있다: `render.yaml`(레포 루트), `project/Dockerfile`,
-  `project/.dockerignore`.
+- 이 앱은 **오래 사는 서버**다(MCP 서버 부팅 시 1회 RAG 인덱싱 + 인메모리 계기판).
+  그래서 서버리스(Vercel)보다 **영속 프로세스/컨테이너 호스트(Render·Railway·Fly)** 가 맞다.
+- 리포에 배포 파일이 들어 있다: `render.yaml`(레포 루트, 2-서비스 Blueprint),
+  `docker-compose.yml`(레포 루트), `project/Dockerfile`, `project/.dockerignore`.
 - 자작 규제 코퍼스라 실 PII·비밀이 없어 공개 배포는 안전하다.
 
-로컬에서 배포와 동일한 방식으로 미리 확인하려면:
+로컬에서 배포와 동일한 2-프로세스 방식으로 미리 확인하려면 `./run.sh`
+(MCP 서버 8001 기동 → 헬스체크 대기 → API 8000 기동) 또는 수동으로:
 
 ```bash
 cd project
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-PORT=8000 sh -c 'python -m src.preflight && \
-  .venv/bin/python -m uvicorn src.api.main:app --host 0.0.0.0 --port $PORT'
+# 터미널 1 — MCP 서버
+.venv/bin/python -m src.preflight --role mcp && \
+  .venv/bin/python -m src.mcp_server.server --transport http --host 127.0.0.1 --port 8001
+# 터미널 2 — API 서버
+MCP_SERVER_URL=http://127.0.0.1:8001/mcp sh -c \
+  '.venv/bin/python -m src.preflight --role api && \
+   .venv/bin/python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000'
 # → http://127.0.0.1:8000 접속, /health·/api/deadlines·/chat 확인
 ```
 
 ---
 
-## 1. 경로 A — Render (권장, 가장 쉬움)
+## 1. 경로 A — Render (권장, 2-서비스 Blueprint)
 
-무료 티어. `render.yaml` 을 자동 인식한다.
+유료 플랜(starter) 기준 — **private service** 로 MCP 서버를 외부 비공개로 띄운다.
+`render.yaml` 을 자동 인식한다.
 
 1. 코드를 GitHub 에 푸시(이미 되어 있으면 생략).
 2. [dashboard.render.com](https://dashboard.render.com) 로그인 → **New +** → **Blueprint**.
-3. 이 GitHub 리포를 선택 → Render 가 레포 루트의 `render.yaml` 을 읽어 **rapv-assistant**
-   웹 서비스를 자동 구성한다(rootDir=`project`, 빌드=의존성 설치, 기동=preflight+uvicorn).
-4. **Apply** → 첫 빌드·배포가 돈다(2~3분). 로그에 `배포 전 점검 … 통과` 후 uvicorn
-   기동이 보이면 정상.
+3. 이 GitHub 리포를 선택 → Render 가 레포 루트의 `render.yaml` 을 읽어 서비스 2개를
+   자동 구성한다:
+   - **rapv-mcp** (private service) — `preflight --role mcp` 통과 후 MCP HTTP 서버
+     기동(RAG 인덱스 구축). 내부 네트워크 전용, 공개 URL 없음.
+   - **rapv-assistant** (web) — `preflight --role api` 가 MCP 서버 실연결(도구 6종
+     노출)까지 확인한 뒤 uvicorn 기동. MCP 주소는 `MCP_SERVER_HOSTPORT` 로
+     `fromService` 자동 주입된다(코드의 `src/config.py` 가 URL 로 조립).
+4. **Apply** → 빌드·배포가 돈다. rapv-mcp 로그에 `배포 전 점검 … 통과` 후 서버
+   기동, rapv-assistant 로그에 `MCP 연결` 통과가 보이면 정상.
 5. 발급된 URL(`https://rapv-assistant-xxxx.onrender.com`)에 접속 → 챗 UI 가 뜬다.
 
-> 무료 티어는 15분 유휴 시 슬립한다 — **첫 접속만 콜드스타트 ~30초**, 이후 빠름.
-> 면접 직전에 한 번 열어 깨워두면 매끄럽다.
-
-블루프린트 대신 수동으로 만들려면: New + → **Web Service** → 리포 연결 →
-Root Directory `project` · Build `pip install -r requirements.txt` ·
-Start `python -m src.preflight && uvicorn src.api.main:app --host 0.0.0.0 --port $PORT` ·
-Health Check Path `/health`.
+> 기존 단일 서비스로 쓰던 Blueprint 를 갱신하는 경우, 대시보드에서 Blueprint
+> Sync 를 한 번 돌려 rapv-mcp 서비스가 새로 생성되는지 확인한다. `/health` 의
+> `mcp.status` 가 `ok` 면 내부 연결까지 정상이다.
 
 ---
 
-## 2. 경로 B — Railway / Fly.io (Docker, 슬립 없음)
+## 2. 경로 B — Docker Compose (로컬/VM, 슬립 없음)
 
-`project/Dockerfile` 을 그대로 쓴다.
+레포 루트의 `docker-compose.yml` 이 같은 이미지(`project/Dockerfile`)로 두
+컨테이너를 띄운다 — `mcp`(내부 전용 8001, healthcheck 로 인덱스 준비 완료 감지)와
+`api`(8000 공개, mcp 가 healthy 된 뒤 기동).
 
-**Railway**: [railway.app](https://railway.app) → New Project → Deploy from GitHub →
-리포 선택 → Settings 에서 **Root Directory = `project`** 지정(Dockerfile 자동 감지) →
-Deploy. 포트는 Railway 가 `$PORT` 로 주입(Dockerfile 이 처리).
+```bash
+docker compose up --build
+# → http://localhost:8000 (mcp 는 호스트에 노출되지 않음)
+```
 
-**Fly.io**: `cd project && fly launch`(Dockerfile 감지, `fly.toml` 생성) → `fly deploy`.
-`internal_port` 를 8080 등으로 두면 Dockerfile 의 `${PORT:-8000}` 대신 `PORT` 를
-환경변수로 넘겨 맞춘다.
+VM(EC2·클라우드 인스턴스 등)에서도 동일 — 방화벽에서 8000 만 열면 된다.
+LLM 모드는 `ANTHROPIC_API_KEY=sk-ant-... docker compose up` 처럼 환경변수로 주입.
+
+**Railway / Fly.io**: `project/Dockerfile` 은 API 롤 단일 컨테이너 기준이므로,
+두 서비스를 각각 만들고 mcp 쪽 command 를
+`python -m src.preflight --role mcp && python -m src.mcp_server.server --transport http --host 0.0.0.0 --port 8001`
+로 오버라이드한 뒤 api 쪽에 `MCP_SERVER_URL` 을 내부 주소로 넣는다.
 
 ---
 
@@ -67,7 +85,8 @@ Deploy. 포트는 Railway 가 `$PORT` 로 주입(Dockerfile 이 처리).
 URL 뒤에 붙여 확인:
 
 - `/` — 챗 UI(질문 입력 → 근거·출처·검증 배지 표시)
-- `/health` — `mode: offline`, 인덱스 문서/청크 수, 검증 게이트 계기판 JSON
+- `/health` — `mode: offline`, `mcp.status: ok`(MCP 서버 연결), 인덱스 문서/청크 수,
+  검증 게이트 계기판 JSON. `status: degraded` 면 MCP 서버 쪽을 확인한다.
 - `/api/deadlines` — 마감일 목록 JSON
 - `/chat` (POST) — `{"message":"..."}` 로 답변·citations·verification 반환
 
@@ -82,7 +101,8 @@ URL 뒤에 붙여 확인:
 종합한다 — 시각적으로 가장 인상적인 부분이다.
 
 - **공개 URL 에는 켜지 말 것**(방문자가 API 비용 소모). 면접 시연이면 시연 직전에
-  플랫폼 대시보드에서 `ANTHROPIC_API_KEY` 환경변수를 추가 → 재배포 → 시연 후 제거.
+  플랫폼 대시보드에서 **rapv-assistant(web) 서비스에만** `ANTHROPIC_API_KEY`
+  환경변수를 추가 → 재배포 → 시연 후 제거(MCP 서버는 키가 필요 없다).
 - 또는 **로컬**에서만 켠다: `project/.env` 에 `ANTHROPIC_API_KEY=sk-ant-...` 후 `./run.sh`.
 - 모델 기본값은 `claude-opus-4-8`(`LLM_MODEL` 로 변경 가능).
 - 키 오류·네트워크 실패는 조용한 폴백 없이 **명시적 안내**로 처리되므로 안전하다.
@@ -94,12 +114,15 @@ URL 뒤에 붙여 확인:
 | 증상 | 원인·해결 |
 |---|---|
 | 빌드는 됐는데 기동 실패 | 로그에 preflight 실패가 보이면 데이터·설정 결함 — 로컬에서 `python -m src.preflight` 로 재현·수정 후 재배포(이것이 fail-closed 게이트의 의도된 동작) |
+| api 가 `MCP 연결` 실패로 기동 중단 | MCP 서버가 아직 안 떴거나 주소가 틀림 — rapv-mcp(또는 mcp 컨테이너) 로그와 `MCP_SERVER_URL`/`MCP_SERVER_HOSTPORT` 를 확인. preflight 는 60초까지 기동을 기다린다 |
+| `/health` 가 `status: degraded` | API 는 떠 있는데 MCP 서버 도달 불가 — MCP 서비스 재시작·주소 확인 |
+| MCP 호출이 421 Misdirected Request | HTTP 기동 시 `allowed_hosts` 누락 — `src/mcp_server/server.py` 의 http 분기(`allowed_hosts=["*"]`)가 살아 있는지 확인 |
 | 404 / 앱이 안 뜸 | Root Directory 가 `project` 인지 확인(레포 루트가 아님) |
-| 첫 접속이 느림 | 무료 티어 콜드스타트(~30초, 정상) — 유료 플랜이면 슬립 없음 |
 | 포트 에러 | 기동 명령이 `--port $PORT` 인지 확인(플랫폼이 포트를 주입) |
 | LLM 모드가 안 켜짐 | `ANTHROPIC_API_KEY` 환경변수 설정 후 **재배포** 필요(빌드 시점 주입) |
 
 ---
 
-**요약**: Render 에 `render.yaml` 블루프린트로 오프라인 모드 배포 → 공개 URL 획득.
-LLM 라이브 시연이 필요할 때만 키를 임시로 켠다.
+**요약**: Render 에 `render.yaml` 블루프린트로 2-서비스(오프라인 모드) 배포 →
+공개 URL 획득. 로컬·VM 은 `docker compose up --build` 한 방이다.
+LLM 라이브 시연이 필요할 때만 web 서비스에 키를 임시로 켠다.

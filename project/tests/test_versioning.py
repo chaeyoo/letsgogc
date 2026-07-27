@@ -1,6 +1,7 @@
 """버전 인지 검색 테스트: 폐지본 제외 · 이력 조회 · 과거 시점(as_of)."""
 from __future__ import annotations
 
+# 서버 내부 단위 테스트 — 도구 함수를 직접 호출한다(HTTP 클라이언트 경로는 test_mcp/test_agent 가 커버)
 from src.mcp_server.server import search_regulations
 
 

@@ -84,9 +84,9 @@ flowchart TB
 | **RAG 최적화** | 구조 청킹, 하이브리드(벡터+BM25), 4신호 리랭킹+섹션 prior, 질의확장, 스윕/ablation 재현 | `src/rag/`, `eval/` |
 | **제약/바이오 산업 이해** | RA·PV 도메인 도구 — RA: 검색·마감·체크리스트 / PV: 트리아지→인과성→코딩(3계층)→ICSR 초안 + 라벨 22케이스 평가 | `src/ra/`, `src/pv/`, `eval/pv_eval.py` |
 | **개인정보 보호** | PII 비식별화 2겹(에이전트 입구+도구 계층) — 한글 직결·조사 표기까지 룩어라운드 경계 | `src/pv/redactor.py` |
-| **MCP / FastMCP** | Tools 6 + Resource + Prompt(3대 primitive), 인메모리/stdio | `src/mcp_server/server.py` |
+| **MCP / FastMCP** | Tools 6 + Resource + Prompt(3대 primitive), 독립 HTTP 서버(운영)/stdio(Claude Desktop) | `src/mcp_server/server.py` |
 | **Agentic / Function Calling** | tool-use 루프, 도구 에러 자가복구, 오프라인 규칙 라우터 폴백 | `src/agent/agent.py` |
-| **PydanticAI** | 동일 계약(검증 게이트·MCP 도구·grounded 판정)의 병렬 백엔드 — `AGENT_BACKEND=pydantic_ai` 로 직접 구현 루프와 교체·비교 가능, MCPToolset 이 인메모리 FastMCP 에 직결 | `src/agent/pydantic_agent.py` |
+| **PydanticAI** | 동일 계약(검증 게이트·MCP 도구·grounded 판정)의 병렬 백엔드 — `AGENT_BACKEND=pydantic_ai` 로 직접 구현 루프와 교체·비교 가능, MCPToolset 이 같은 MCP_SERVER_URL(HTTP)에 직결 | `src/agent/pydantic_agent.py` |
 | **FastAPI · 프론트엔드** | `/chat`·`/health` + 단일 페이지 챗 UI(출처·트레이스·검증 배지) | `src/api/`, `web/` |
 | **신뢰성(환각 억제)** | groundedness·abstention(AND 문턱)·출처/버전 추적·`as_of` 시점 조회 | `src/agent/`, `src/rag/retriever.py` |
 | **답변 사후 검증** | 전 응답 통과 런타임 게이트 + 게이트 자체의 메타모픽 평가(pytest 가드로 CI 강제) | `src/verify/`, `eval/verify_eval.py` |
