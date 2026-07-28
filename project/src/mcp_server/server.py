@@ -411,17 +411,56 @@ def pv_case_intake(case_description: str) -> str:
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------
-@mcp.resource("regulation://{doc_id}")
-def get_regulation_document(doc_id: str) -> str:
-    """규제문서 원문 전체를 doc_id(예: REG-003)로 조회한다."""
+def _regulation_text(doc_id: str) -> str:
+    """doc_id 로 규제문서 원문 전체를 찾는다 — 템플릿·정적 리소스가 공유하는 본체."""
     from ..pv.redactor import redact
     from ..rag.loader import load_documents
 
     for doc in load_documents(config.REG_DIR):
         if doc.doc_id.lower() == doc_id.lower():
+            # 본문이 이미 같은 H1 제목으로 시작하면 중복 부착하지 않는다
+            body = doc.text.lstrip()
+            if body.startswith(f"# {doc.title}"):
+                return body
             return f"# {doc.title}\n\n{doc.text}"
     # 미매칭 doc_id 는 임의 문자열일 수 있다 — 에러 에코도 마스킹(도구 인자와 동일 근거)
     return f"문서를 찾을 수 없음: {redact(doc_id).text}"
+
+
+@mcp.resource("regulation://{doc_id}")
+def get_regulation_document(doc_id: str) -> str:
+    """규제문서 원문 전체를 doc_id(예: REG-003)로 조회한다."""
+    return _regulation_text(doc_id)
+
+
+def _register_static_regulation_resources() -> None:
+    """코퍼스 13종을 구체 URI 의 정적 리소스로도 등록한다.
+
+    템플릿(regulation://{doc_id})은 resources/templates/list 에만 잡혀서,
+    resources/list(구체 URI 열거)만 보여주는 클라이언트 첨부 메뉴(Claude Desktop)
+    에는 나타나지 않는다 — Prompt 는 인자 선언 스펙이 있어 입력 폼이 그려지지만
+    리소스 템플릿에는 그런 UI 가 없다(실측). 같은 문서의 두 접근 경로를 함께 둔다:
+    열거·선택은 정적 리소스, 파라미터 접근은 템플릿.
+    """
+    from ..rag.loader import load_documents
+
+    def _make_reader(doc_id: str):
+        def reader() -> str:
+            return _regulation_text(doc_id)
+
+        reader.__name__ = f"regulation_{doc_id.replace('-', '_').lower()}"
+        return reader
+
+    for d in load_documents(config.REG_DIR):
+        mcp.resource(
+            f"regulation://{d.doc_id}",
+            name=d.doc_id,
+            description=f"{d.title} — 원문 전체",
+            mime_type="text/markdown",
+        )(_make_reader(d.doc_id))
+
+
+_register_static_regulation_resources()
 
 
 @mcp.tool
