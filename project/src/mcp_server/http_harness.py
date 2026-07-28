@@ -24,7 +24,9 @@ def run_mcp_http_server(host: str = "127.0.0.1", server_obj=None) -> Iterator[st
     server_obj: 기본은 프로덕션 서버(mcp) — 인증 등 다른 구성의 FastMCP 인스턴스를
     검증하는 테스트만 별도 서버를 넘긴다.
     """
-    app = (server_obj or mcp).http_app()
+    # stateless_http=True — 프로덕션 기동(server.py --transport http)과 동일 구성.
+    # 테스트가 프로덕션과 다른 세션 모드로 돌면 세션 계층 결함이 여기서 안 보인다.
+    app = (server_obj or mcp).http_app(stateless_http=True)
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=0, log_level="error", lifespan="on")
     )

@@ -473,6 +473,16 @@ if __name__ == "__main__":
         # allowed_hosts=["*"]: fastmcp 의 Host 헤더 가드는 기본이 loopback 전용이라
         # compose/Render 내부 호스트명(예: mcp:8001)의 요청이 421 로 거절된다.
         # 이 서버는 내부 네트워크 전용(호스트 미공개)이므로 전체 허용이 안전하다.
-        mcp.run(transport="http", host=args.host, port=args.port, allowed_hosts=["*"])
+        # stateless_http=True: 프로토콜 세션 장부를 만들지 않는다. 기본(stateful)은
+        # 세션 테이블이 프로세스 메모리에 있어 재배포가 곧 전 세션 무효화다 —
+        # 세션을 들고 있던 외부 클라이언트(Claude Desktop 의 mcp-remote)가
+        # 'Session not found' 404 로 죽고 클라이언트 재시작 전까지 복구되지 않는
+        # 것을 실측했다. 이 서버는 서버발 기능(sampling·elicitation·알림·구독)을
+        # 쓰지 않는 순수 요청-응답이라 세션의 이점이 없고, 무세션이 곧 재배포
+        # 무중단이다. (앱 수준 상태 — RAG 인덱스·계기판 — 는 층이 다르며 그대로다.)
+        mcp.run(
+            transport="http", host=args.host, port=args.port,
+            allowed_hosts=["*"], stateless_http=True,
+        )
     else:
         mcp.run()  # stdio — Claude Desktop/Cursor 연결(종전과 동일)
