@@ -117,6 +117,46 @@ def test_tasks_check_catches_stale_deadlines(tmp_path):
     assert not any("모두 과거" in p for p in preflight.check_tasks(f))
 
 
+def test_mcp_reachable_waits_out_rolling_deploy_version_skew():
+    """무중단 롤링 배포 중에는 구버전 MCP 인스턴스가 새 인스턴스 준비 전까지
+    정상 응답한다 — '연결 성공 + 기대 도구 없음'을 즉시 실패로 처리하면
+    새 도구를 추가한 커밋마다 API preflight 가 과도기에 기동을 거부한다
+    (search_web 추가 배포에서 실측). 도구 누락도 deadline 안에서 재시도해
+    스큐가 해소되면 통과해야 한다."""
+    old = {"search_regulations", "get_ra_deadlines", "get_submission_checklist",
+           "assess_adverse_event", "draft_ae_report", "list_regulation_documents"}
+    seq = [old, old, old | {"search_web"}]   # 구버전 2회 응답 후 새 버전 전환
+    calls = {"n": 0}
+
+    def probe():
+        tools = seq[min(calls["n"], len(seq) - 1)]
+        calls["n"] += 1
+        return tools
+
+    problems = preflight.check_mcp_reachable(timeout_s=5.0, probe=probe, poll_interval_s=0.01)
+    assert problems == [] and calls["n"] >= 3
+
+
+def test_mcp_reachable_reports_missing_tools_after_deadline():
+    """deadline 이 지나도록 도구가 누락이면 — 버전 스큐 안내가 담긴 명시적
+    실패로 보고한다(기다림이 침묵 통과로 바뀌면 안 된다: 진짜 계약 위반은
+    여전히 기동 차단)."""
+    old = {"search_regulations"}
+    problems = preflight.check_mcp_reachable(timeout_s=0.05, probe=lambda: old, poll_interval_s=0.01)
+    assert problems and "도구 누락" in problems[0]
+    assert "search_web" in problems[0] and "버전 스큐" in problems[0]
+
+
+def test_mcp_reachable_reports_connection_failure_after_deadline():
+    """연결 자체가 끝내 안 되면 — 종전과 같은 '연결 실패 + 주소 출처 진단'
+    경로가 유지된다(누락 재시도 추가가 이 경로를 밀어내지 않는다)."""
+    def probe():
+        raise ConnectionError("boom")
+
+    problems = preflight.check_mcp_reachable(timeout_s=0.05, probe=probe, poll_interval_s=0.01)
+    assert problems and "연결 실패" in problems[0] and "ConnectionError" in problems[0]
+
+
 def test_gate_self_tests_cover_every_warning_axis():
     """자가 테스트의 축 대칭성 — 런타임 게이트의 모든 경고 축에 대해 '심은
     오류' 케이스가 존재해야 한다. 처음에는 수치 존재 축만 자가 테스트했는데,

@@ -527,17 +527,33 @@ def smoke_checks() -> list[str]:
     return problems
 
 
-def check_mcp_reachable(timeout_s: float = 60.0) -> list[str]:
+def check_mcp_reachable(
+    timeout_s: float = 60.0,
+    probe=None,
+    poll_interval_s: float = 2.0,
+) -> list[str]:
     """API 롤 전용 — 분리된 MCP 서버 기동을 기다린 뒤 도구 7종 노출까지 실연결로 검증.
 
     완전 분리 구조에서 API 컨테이너의 가장 흔한 Day-0 실패는 코드가 아니라
     'MCP 서버가 아직 안 떴다/URL 이 틀렸다'이다 — wait-loop 로 기동 순서를
     흡수하고, list_tools 실왕복으로 도구 계약까지 확인한다.
+
+    도구 '누락'도 deadline 안에서 재시도한다(v12) — 무중단 롤링 배포에서는
+    새 MCP 인스턴스가 준비될 때까지 **구버전 인스턴스가 정상 응답**하므로,
+    새 도구를 추가한 커밋의 API 가 먼저 점검을 돌면 '연결 성공 + 기대 도구
+    없음'이 과도기의 정상 상태다. '아직 안 떴다'는 기다리면서 '아직
+    구버전이다'는 즉시 실패하는 것은 wait-loop 의 비대칭이었다(search_web
+    추가 배포에서 실측 — rapv-mcp 재배포 완료 전에 rapv-assistant 의
+    preflight 가 구버전 도구 목록을 보고 기동을 거부했다).
+
+    Args:
+        timeout_s: 연결·도구 계약 충족을 기다리는 상한(초).
+        probe: 도구 이름 집합을 반환하는 호출자(테스트 봉합선) — 기본은
+            fastmcp Client 로 MCP_SERVER_URL 에 실연결하는 프로브.
+        poll_interval_s: 재시도 간격(초) — 테스트가 줄여 쓴다.
     """
     import asyncio
     import time as _time
-
-    from fastmcp import Client
 
     expected = {
         "search_regulations", "get_ra_deadlines", "get_submission_checklist",
@@ -545,19 +561,37 @@ def check_mcp_reachable(timeout_s: float = 60.0) -> list[str]:
         "search_web",
     }
 
-    async def _probe() -> set[str]:
-        async with Client(config.MCP_SERVER_URL, auth=config.MCP_AUTH_TOKEN or None) as c:
-            return {t.name for t in await c.list_tools()}
+    if probe is None:
+        from fastmcp import Client
+
+        async def _probe() -> set[str]:
+            async with Client(config.MCP_SERVER_URL, auth=config.MCP_AUTH_TOKEN or None) as c:
+                return {t.name for t in await c.list_tools()}
+
+        probe = lambda: asyncio.run(_probe())  # noqa: E731 - 기본 프로브 봉합선
 
     deadline = _time.monotonic() + timeout_s
     last = ""
-    while _time.monotonic() < deadline:
+    missing: set[str] | None = None
+    while True:
         try:
-            missing = expected - asyncio.run(_probe())
-            return [f"MCP 서버 도구 누락: {sorted(missing)}"] if missing else []
+            missing = expected - probe()
+            if not missing:
+                return []
+            last = ""  # 연결은 성공 — 버전 스큐 대기로 전환
         except Exception as e:  # noqa: BLE001 - 기동 대기 중 연결 실패는 재시도
+            missing = None
             last = type(e).__name__
-            _time.sleep(2)
+        if _time.monotonic() >= deadline:
+            break
+        _time.sleep(poll_interval_s)
+    if missing:
+        return [
+            f"MCP 서버 도구 누락: {sorted(missing)} — 서버는 응답하지만 기대 도구가 없다."
+            " MCP 서비스가 아직 구버전 코드로 떠 있을 가능성(롤링 배포 버전 스큐)이"
+            " 크다: MCP 서비스(rapv-mcp / compose mcp)의 새 버전 배포 완료를 확인한 뒤"
+            " API 를 재기동/재배포할 것"
+        ]
     # 실패 시 '주소가 어디서 왔는지'까지 진단한다 — 실배포의 최빈 원인은 연결
     # 자체가 아니라 주소 주입 실패(플랫폼 env 미주입 → 로컬 기본값 폴백)였다.
     env_src = (
