@@ -72,8 +72,31 @@ SYSTEM_PROMPT = (
     "반드시 제공된 MCP 도구로 사내 규제문서와 업무 데이터를 조회한 뒤, "
     "그 근거에 기반해서만 답한다. 근거가 없으면 모른다고 답하고 추측하지 않는다. "
     "규제 정보(기한·절차)는 정확성이 생명이므로 항상 출처(문서명·섹션)를 함께 제시한다. "
+    "인터넷 검색(search_web)은 사용자가 명시적으로 요청한 경우에만 사용한다 — "
+    "사내 문서에서 근거를 못 찾았다는 이유로 대신 쓰지 않는다(그 경우 근거 없음을 그대로 답한다). "
+    "웹 검색 결과를 답변에 쓸 때는 반드시 '🌐 인터넷 검색 결과' 표시와 출처 URL 을 붙여 "
+    "사내 규제문서 근거와 구분하고, 두 근거를 한 문장에 섞지 않는다. "
     "답변은 한국어로, 간결한 실무체로 작성한다."
 )
+
+# 인터넷 검색의 '명시 요청' 감지 — 닫힌 어휘·요청형 구문만 좁게 잡는다.
+# "인터넷 판매 의약품 규정"처럼 질문 '주제'에 인터넷/온라인이 들어가는 경우와
+# 구분해야 하므로, (인터넷|웹|온라인)+검색·찾기 '요청' 구문 또는 검색엔진
+# 고유명만 매칭한다. 오탐은 외부 송신 경로를 여는 스위치의 오탐이라 이력
+# 마커(_HISTORY_MARKERS)와 같은 철학으로 확신 없는 어휘는 넣지 않는다.
+_WEB_REQUEST_RE = re.compile(
+    r"(?:인터넷|웹|온라인)\s*(?:에서|으로|을|를)?\s*(?:검색|찾아|서치|조회)"
+    r"|구글링|구글|네이버\s*검색|검색\s*엔진|웹서핑"
+)
+
+
+def _wants_web_search(message: str) -> bool:
+    """이 턴의 사용자 메시지가 인터넷 검색을 '명시적으로' 요청했는가.
+
+    True 일 때만 search_web 도구가 에이전트에 노출·허용된다(명시와 분리의
+    '명시' 쪽 절반 — 프롬프트 지시가 아니라 도구 가용성 자체로 강제한다).
+    """
+    return bool(_WEB_REQUEST_RE.search(message))
 
 
 @dataclass
@@ -98,6 +121,10 @@ class AgentResult:
     latency_ms: float = 0.0        # 총 처리 지연
     redactions: list[dict] = field(default_factory=list)  # PII 마스킹 내역(유형·건수만)
     verification: dict = field(default_factory=dict)  # 사후 검증 결과(수치 대조·버전 점검)
+    # 인터넷 검색 결과(origin="web") — 사내 출처(citations)와 '별도 필드'로
+    # 분리해 내보낸다. citations 에 섞으면 UI 출처 카드에서 웹 결과가 규제문서
+    # 근거처럼 읽힌다(명시와 분리 원칙의 API 계층 적용).
+    web_results: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +261,7 @@ def _finalize(
     question: str = "",
     allowed_superseded_ids: set[str] | None = None,
     user_facts: list[str] | None = None,
+    web_texts: list[str] | None = None,
 ) -> AgentResult:
     """모든 응답이 통과하는 사후 검증 게이트 — 답변 속 수치·날짜·방향 한정어를
     신뢰 소스(검색 근거 + 결정론적 도구 출력, 질문 에코 제외)와 대조하고
@@ -254,6 +282,10 @@ def _finalize(
         question=question,
         allowed_superseded_ids=allowed_superseded_ids,
         user_fact_texts=user_facts,
+        # 웹 검색 출력은 3번째 계층 — 게이트를 '건너뛰는' 것이 아니라 계층
+        # 라벨(from_web)로 분리한다: 웹 재서술 수치에 미확인 오탐이 붙지 않되
+        # (검증은 계속 돌고) 사내 규정 근거로 승격되지도 않는다.
+        web_texts=web_texts,
     )
     flow(
         "_finalize()",
@@ -353,6 +385,12 @@ class RaAgent:
         # grounded=False 로 강등하는 것과 대칭 — v10).
         grounded_evidence = False
         user_facts: list[str] = []      # 도구 출력 속 '사용자가 서술한 사실'(case 에코) — 별도 계층
+        web_texts: list[str] = []       # 인터넷 검색 출력 — 검증의 3번째 계층(from_web 라벨용)
+        web_results: list[dict] = []    # 웹 결과 카드(사내 citations 와 분리 노출)
+        # 명시와 분리의 '명시': 이 턴에 인터넷 검색을 명시 요청하지 않았으면
+        # search_web 은 도구 목록에서 아예 빠진다 — 프롬프트 지시(어겨질 수
+        # 있는 규칙)가 아니라 도구 가용성(구조)으로 강제한다.
+        web_requested = _wants_web_search(message)
 
         # MCP 서버에 연결한다 — 서버는 별도 프로세스(docker compose 의 mcp 서비스 /
         # Render 의 rapv-mcp)로 떠 있고, MCP_SERVER_URL 로 streamable HTTP 연결한다.
@@ -361,10 +399,15 @@ class RaAgent:
         async with AsyncExitStack() as stack:
             try:
                 mcp_client = await stack.enter_async_context(_mcp_client())
-                # 도구 6종의 이름·설명(docstring)·입력 스키마를 Anthropic tools
+                # 도구 7종의 이름·설명(docstring)·입력 스키마를 Anthropic tools
                 # 포맷으로 변환. 이 '설명'이 Claude 가 어떤 도구를 쓸지 판단하는
                 # 유일한 근거다.
                 tools = _to_anthropic_tools(await mcp_client.list_tools())
+                if not web_requested:
+                    # 인터넷 검색은 명시 요청 턴에만 노출 — 미요청 턴에는 모델이
+                    # 선택할 수조차 없다(사내 문서 abstention 이 웹 폴백으로
+                    # 조용히 대체되는 경로의 구조적 차단).
+                    tools = [t for t in tools if t["name"] != "search_web"]
             except Exception as e:  # noqa: BLE001 - 연결 실패는 명시적 안내로 흡수
                 # 연결·도구목록 확보 실패(서버 미기동·URL 오설정)는 크래시 대신
                 # '무엇을 확인하라'는 안내문으로 응답한다(LLM API 실패와 같은 규율).
@@ -435,11 +478,13 @@ class RaAgent:
                             tool_calls=tool_calls,
                             citations=_collect_citations(tool_calls, raw_search_results),
                             grounded=False,  # 실패 안내문 — 근거 보증이 아니다
+                            web_results=web_results,
                         ),
                         trusted_texts,
                         question=_question_context(message, history),
                         allowed_superseded_ids=history_doc_ids,
                         user_facts=user_facts,
+                        web_texts=web_texts,
                     )
                 # Claude 가 도구 요청 없이 답변을 확정한 경우 — 루프의 정상 출구.
                 # 텍스트 블록을 이어 붙여 최종 답변으로 확정하고, 사후 검증
@@ -468,11 +513,13 @@ class RaAgent:
                             # True 가 그대로 노출되어 출처 0건 답변이 근거 배지를
                             # 달고 나갔다 — v7 발견, v10 에서 '빈 검색 성공'까지 보강).
                             grounded=grounded_evidence,
+                            web_results=web_results,
                         ),
                         trusted_texts,
                         question=_question_context(message, history),
                         allowed_superseded_ids=history_doc_ids,
                         user_facts=user_facts,
+                        web_texts=web_texts,
                     )
 
                 # ── Claude 가 "이 도구를 이 인자로 불러 달라"고 요청한 경우 ──
@@ -510,11 +557,19 @@ class RaAgent:
                         #   '안'에도 사용자 입력이 에코된다.
                         # - 케이스 서술 에코(case)는 별도 바구니(user_facts)로 —
                         #   지지 근거로는 인정하되 from_case 라벨이 붙는다.
+                        # - 인터넷 검색(search_web) 출력은 사내 신뢰 소스가
+                        #   아니다 — 검증의 3번째 계층(web_texts)으로만 쌓고,
+                        #   grounded(사내 도구 근거 확보) 판정에도 넣지 않는다.
                         stripped, facts = _split_user_facts(data)
-                        trusted_texts.append(_stringify(stripped))
-                        user_facts.extend(facts)
-                        if _has_evidence(stripped):  # 결과 0건짜리 '성공'은 근거로 안 친다
-                            grounded_evidence = True
+                        if block.name == "search_web":
+                            web_texts.append(_stringify(stripped))
+                            if isinstance(stripped, dict):
+                                web_results.extend(stripped.get("results", []))
+                        else:
+                            trusted_texts.append(_stringify(stripped))
+                            user_facts.extend(facts)
+                            if _has_evidence(stripped):  # 결과 0건짜리 '성공'은 근거로 안 친다
+                                grounded_evidence = True
                     # 출처(citations) 수집 — UI 출처 카드와 폐지본 인용 검증의 재료.
                     if not is_error and isinstance(data, dict):
                         if block.name == "search_regulations" and "results" in data:
@@ -566,11 +621,13 @@ class RaAgent:
                     tool_calls=tool_calls,
                     citations=_collect_citations(tool_calls, raw_search_results),
                     grounded=False,  # 확정 실패 안내문 — 근거 보증이 아니다
+                    web_results=web_results,
                 ),
                 trusted_texts,
                 question=_question_context(message, history),
                 allowed_superseded_ids=history_doc_ids,
                 user_facts=user_facts,
+                web_texts=web_texts,
             )
 
     async def _safe_tool_call(self, mcp_client, name: str, args: dict, trace: Trace):
@@ -611,6 +668,45 @@ class RaAgent:
                 intent=intent, resolved=resolved,
                 next=_INTENT_NEXT[intent],
             )
+
+            if intent == "web":
+                # 명시적 인터넷 검색 요청 — 이 경로 밖에서는 search_web 이 절대
+                # 호출되지 않는다(사내 문서 abstention 의 웹 폴백 금지). 결과는
+                # 사내 근거와 분리된 표시(🌐)·필드(web_results)·검증 계층
+                # (web_texts)으로 나간다.
+                args = {"query": resolved, "top_n": 3}
+                with timed(trace, "tool.search_web", "tool", {"args": args}):
+                    data = (await mcp_client.call_tool("search_web", args)).data
+                tool_calls.append(ToolCall("search_web", args, _summarize(data)))
+                if _is_contract_error(data):
+                    # 비활성화·네트워크 실패 — 조용한 빈 결과 대신 원인을 말하는
+                    # 실패(에러 계약의 문구는 정적 텍스트 + 예외 타입명뿐이다).
+                    return _finalize(
+                        AgentResult(
+                            answer=(
+                                f"🌐 인터넷 검색을 수행하지 못했습니다 — {data['error']}."
+                                + (f" ({data['expected']})" if data.get("expected") else "")
+                            ),
+                            mode="offline",
+                            tool_calls=tool_calls,
+                            grounded=False,
+                        ),
+                        [],
+                        question=resolved,
+                    )
+                return _finalize(
+                    AgentResult(
+                        answer=_format_web_answer(data),
+                        mode="offline",
+                        tool_calls=tool_calls,
+                        citations=[],           # 웹 결과는 사내 출처 카드에 넣지 않는다
+                        grounded=False,         # '사내 도구 근거 확보' 배지의 대상이 아니다
+                        web_results=data.get("results", []),
+                    ),
+                    [],
+                    question=resolved,
+                    web_texts=[_stringify(_strip_query_echo(data))],
+                )
 
             if intent == "ae_report":
                 # 케이스 서술 + '보고서 작성' 요청 → ICSR 초안 도구(트리아지+인과성+코딩+최소요건)
@@ -918,6 +1014,7 @@ def _extract_awareness_date(message: str) -> str:
 # 판정 규칙 자체는 _route_intent 에 있다(여기는 로그 문구만 — 규칙과 문구를
 # 이중 유지하지 않도록 '어떤 어휘 계열이 신호였는지' 수준으로만 적는다).
 _INTENT_NEXT = {
+    "web": "search_web 호출 — 사용자가 인터넷/웹 검색을 명시적으로 요청하는 구문이 감지되어서(이 경로에서만 호출)",
     "ae_report": "draft_ae_report 호출 — 케이스 서술(환자/복용)+사건 어휘에 더해 '보고서/초안' 요청 어휘가 있어서",
     "ae_triage": "assess_adverse_event 호출 — 케이스 서술(환자/복용)+사건 어휘(입원·쇼크 등)가 함께 감지되어서",
     "deadlines": "get_ra_deadlines 호출 — '마감/일정/디데이' 등 업무 일정 어휘가 감지되어서",
@@ -928,6 +1025,11 @@ _INTENT_NEXT = {
 
 def _route_intent(message: str) -> str:
     m = message.lower()
+    # 인터넷 검색: 명시적 요청 구문이 있을 때만 — 다른 어떤 인텐트보다 먼저
+    # 본다("이상사례 최신 동향 인터넷에서 검색해줘"는 검색 요청이지 케이스가
+    # 아니다). 이 분기 밖에서는 search_web 이 호출되는 경로 자체가 없다.
+    if _wants_web_search(m):
+        return "web"
     # AE 트리아지: '구체적 케이스 서술'일 때만 (환자/복용 맥락 + 사건 어휘).
     # "중대한 이상사례는 며칠 안에 보고?" 같은 '규정 질문'은 search 로 남긴다.
     if any(k in m for k in _AE_CASE_MARKERS) and any(k in m for k in _AE_EVENT_MARKERS):
@@ -1045,8 +1147,38 @@ def _format_search_answer(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_web_answer(data: dict) -> str:
+    """search_web 결과 → 분리 표시(🌐)가 붙은 답변 본문.
+
+    사내 검색 답변(_format_search_answer)과 형태를 일부러 다르게 한다 —
+    첫 줄의 분리 고지와 항목별 URL 로, 어느 대목을 발췌해 읽어도 이것이
+    사내 규제문서 근거가 아님이 드러나야 한다(명시와 분리의 '분리').
+    """
+    header = (
+        "🌐 인터넷 검색 결과 — 아래 내용은 사내 규제문서가 아닌 공개 웹에서 검색된 것입니다. "
+        "규제 판단의 근거로 사용하기 전 원문과 사내 규정을 반드시 확인하세요."
+    )
+    results = data.get("results", [])
+    if not results:
+        return header + "\n\n검색 결과를 찾지 못했습니다. 검색어를 바꿔 다시 시도해 주세요."
+    lines = [header]
+    for i, r in enumerate(results, 1):
+        snippet = (r.get("snippet") or "").strip()
+        if len(snippet) > 260:
+            snippet = snippet[:260] + "…"
+        lines.append(
+            f"\n[웹 {i}] {r.get('title', '').strip()}\n{r.get('url', '')}"
+            + (f"\n{snippet}" if snippet else "")
+        )
+    return "\n".join(lines)
+
+
 def _summarize(data: Any) -> str:
     if isinstance(data, dict):
+        if data.get("origin") == "web":
+            # 웹 검색은 요약에도 분리 표시 — UI 도구 트레이스에서 사내 검색
+            # ("N건 검색")과 구분되어 읽힌다.
+            return f"🌐 웹 {len(data.get('results', []))}건 검색"
         if "reportable" in data:
             n_missing = len(data.get("missing", []))
             return "초안 완성(요건 충족)" if data["reportable"] else f"초안 생성(보완 {n_missing}건 필요)"

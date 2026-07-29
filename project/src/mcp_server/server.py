@@ -8,6 +8,7 @@ GC 'Hey.GC 2.0'가 MCP 구조로 사내 시스템을 통합하는 것과 동일�
                / assess_adverse_event (PV 트리아지+인과성+코딩)
                / draft_ae_report (ICSR 초안+최소보고요건 검증)
                / list_regulation_documents
+               / search_web (인터넷 검색 — 사용자 명시 요청 전용, 결과는 origin="web" 분리)
   - Resources: regulation://{doc_id}  (규제문서 원문 조회)
   - Prompts:   pv_case_intake  (케이스 처리 SOP — 클라이언트 무관 동일 절차)
 
@@ -461,6 +462,53 @@ def _register_static_regulation_resources() -> None:
 
 
 _register_static_regulation_resources()
+
+
+@mcp.tool
+def search_web(query: str, top_n: int = 3) -> dict:
+    """인터넷(공개 웹)을 검색한다 — **사용자가 명시적으로 인터넷 검색을 요청한 경우에만** 사용한다.
+
+    사내 규제문서·업무 데이터에 없는 정보(최신 뉴스·해외 규제 동향 등)를
+    사용자가 "인터넷에서/웹에서 검색해 달라"고 **직접 요청**했을 때만 쓴다.
+    사내 문서에서 근거를 찾지 못했다는 이유로 이 도구를 대신 쓰지 않는다 —
+    그 경우는 "근거를 찾지 못했다"고 답하는 것이 옳다(회피는 회피로 남긴다).
+
+    결과는 사내 규제문서 근거가 **아니다** — 반환 dict 와 각 결과 항목에
+    origin="web" 이 박혀 있고 notice(분리 고지)가 동봉된다. 이 결과를 답변에
+    사용할 때는 반드시 인터넷 검색 결과임을 표시하고 출처 URL 을 함께 제시해,
+    사내 규제문서 근거와 섞이지 않게 구분한다.
+
+    Args:
+        query: 검색할 질문/키워드. 개인정보가 섞여 있으면 검색 전에 마스킹된다
+            (질의가 외부 검색엔진으로 송신되므로 다른 도구보다도 필수적이다).
+        top_n: 반환할 결과 수 (기본 3, 유효 범위 1~5 — 범위 밖 값은 경계로 보정).
+
+    Returns:
+        {"query", "origin": "web", "notice", "results": [{"title","url","snippet","origin"}...]}.
+        질의가 비었거나, 인터넷 검색이 비활성화(WEB_SEARCH=0)이거나, 네트워크
+        실패면 {"error", "expected"} — 조용한 빈 결과는 '관련 정보 없음'이라는
+        자신 있는 오답으로 소비되므로 명시적 에러 계약으로 답한다.
+    """
+    from ..pv.redactor import redact
+    from ..websearch import search as _web_search
+
+    # 질의는 외부 검색엔진으로 '실제 송신'된다 — 도구 계층 마스킹이 다른 자유
+    # 텍스트 인자보다도 앞서는 필수 경계다(voyage 임베더 송신과 같은 계열).
+    query = redact(query).text
+    flow(
+        "search_web()",
+        "인터넷 검색 — 사용자 명시 요청 전용 도구. 결과는 origin=web 로 사내 근거와 분리",
+        query=query, top_n=top_n,
+        next="src/websearch.py search() 호출 — 성공 결과는 웹 계층(web_texts)으로만 축적된다(사내 신뢰 소스 아님)",
+    )
+    out = _web_search(query, top_n=top_n)
+    flow(
+        "search_web()",
+        "인터넷 검색 완료 — 에러 계약 또는 origin=web 결과 반환(분리 고지 동봉)",
+        results=len(out.get("results", [])), error=out.get("error", ""),
+        next="호출자(에이전트)로 dict 반환 — 답변에는 '인터넷 검색 결과' 표시와 URL 이 함께 나가야 한다",
+    )
+    return out
 
 
 @mcp.tool

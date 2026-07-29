@@ -160,6 +160,7 @@ class GateStats:
     checked_responses: int = 0   # 수치·날짜 클레임이 1개 이상 있던 응답
     warned_checked: int = 0      # 그중 경고가 붙은 응답
     case_labeled: int = 0        # 케이스 서술 유래(from_case) 라벨이 붙은 응답
+    web_labeled: int = 0         # 인터넷 검색 유래(from_web) 라벨이 붙은 응답
     by_axis: dict[str, int] = field(default_factory=dict)
 
     # 축 목록의 정본은 검증기(verifier.WARNING_AXES)다 — 여기서 수동 복제
@@ -185,6 +186,11 @@ class GateStats:
         # 쪽에서 정의된다(docstring "from_case 라벨이 붙은 응답"과 집계의 일치).
         if summary.get("case_origin"):
             self.case_labeled += 1
+        # 웹 유래 라벨의 추이 — 웹 지지 응답이 갑자기 늘면 답변이 사내 규정
+        # 근거 대신 인터넷 결과에 기대기 시작했다는 신호다(명시와 분리 원칙의
+        # 침식 — case_labeled 와 같은 원리로, 경고율만 보면 이 이동은 보이지 않는다).
+        if summary.get("web_origin"):
+            self.web_labeled += 1
         for axis in self._AXES:
             if summary.get(axis):
                 self.by_axis[axis] = self.by_axis.get(axis, 0) + 1
@@ -200,6 +206,7 @@ class GateStats:
                 if self.checked_responses else 0.0
             ),
             "case_labeled": self.case_labeled,
+            "web_labeled": self.web_labeled,
             "by_axis": dict(self.by_axis),
         }
 
@@ -209,6 +216,7 @@ class GateStats:
         self.checked_responses = 0
         self.warned_checked = 0
         self.case_labeled = 0
+        self.web_labeled = 0
         self.by_axis = {}
 
 
@@ -231,6 +239,9 @@ def record_verification(summary: dict) -> None:
                 # case_origin 은 경고가 아니라 등급 라벨(지지 근거가 사용자
                 # 케이스 서술뿐인 클레임) — 감사에서 '규정 근거'와 구분해 읽는다.
                 "case_origin": summary.get("case_origin"),
+                # web_origin 도 등급 라벨 — 지지 근거가 인터넷 검색 결과뿐인
+                # 클레임(사내 규정 근거 아님 — 감사에서 별도 계층으로 읽는다).
+                "web_origin": summary.get("web_origin"),
                 "superseded_cited": summary.get("superseded_cited"),
             },
             ensure_ascii=False,

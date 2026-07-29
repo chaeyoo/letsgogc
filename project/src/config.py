@@ -50,6 +50,13 @@ LLM_AVAILABLE = bool(ANTHROPIC_API_KEY)
 # | 'pydantic_ai'(PydanticAI 프레임워크 백엔드). 오프라인 모드는 백엔드 무관.
 AGENT_BACKEND = os.environ.get("AGENT_BACKEND", "direct").strip().lower()
 
+# 인터넷 검색(search_web) — 사용자가 '명시적으로' 요청했을 때만 에이전트에 노출되는
+# 보조 도구다(명시와 분리 원칙 — 사내 문서에서 못 찾은 질문을 조용히 웹으로 대신
+# 답하지 않는다). 사내망 차단 환경·외부 송신 금지 정책에서는 0 으로 끈다 —
+# 끄면 도구가 명시적 에러 계약으로 답한다(조용한 빈 결과 금지).
+WEB_SEARCH_ENABLED = os.environ.get("WEB_SEARCH", "1") not in ("0", "false", "off")
+WEB_SEARCH_TIMEOUT = float(os.environ.get("WEB_SEARCH_TIMEOUT", "6.0"))  # 초
+
 # RAG 하이퍼파라미터 (RAG '최적화'의 손잡이들)
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "500"))       # 청크 크기(문자)
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "80"))  # 겹침(경계 손실 방지)

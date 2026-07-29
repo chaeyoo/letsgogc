@@ -12,7 +12,21 @@ from fastmcp import Client
 EXPECTED_TOOLS = {
     "search_regulations", "get_ra_deadlines", "get_submission_checklist",
     "assess_adverse_event", "draft_ae_report", "list_regulation_documents",
+    "search_web",
 }
+
+# 인터넷 검색 스텁 — 실제 네트워크 없이 DDG HTML 파싱 계약을 태운다.
+# (서버는 conftest 가 같은 프로세스의 스레드로 띄우므로 monkeypatch 가 통한다)
+_DDG_HTML = """
+<div class="result">
+  <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnews%2F1&amp;rut=abc">MFDS <b>이상사례</b> 보고 고시 개정</a>
+  <a class="result__snippet" href="#">개정 고시는 2026-05-01 시행 예정이다.</a>
+</div>
+<div class="result">
+  <a rel="nofollow" class="result__a" href="https://example.org/page">해외 규제 동향</a>
+  <a class="result__snippet" href="#">EMA 가이드라인 요약.</a>
+</div>
+"""
 
 
 async def _call(url: str, name: str, args: dict) -> dict:
@@ -21,7 +35,7 @@ async def _call(url: str, name: str, args: dict) -> dict:
 
 
 async def test_server_exposes_expected_tools(mcp_server_url):
-    """도구 6종 노출 계약 — preflight check_mcp_reachable 과 같은 기대 집합."""
+    """도구 7종 노출 계약 — preflight check_mcp_reachable 과 같은 기대 집합."""
     async with Client(mcp_server_url) as c:
         names = {t.name for t in await c.list_tools()}
     assert names == EXPECTED_TOOLS
@@ -152,6 +166,72 @@ def test_resource_error_echo_is_masked():
 
     missing = get_regulation_document("김철수님 010-1234-5678")
     assert "010-1234-5678" not in missing and "김철수" not in missing
+
+
+async def test_search_web_contract(mcp_server_url, monkeypatch):
+    """search_web 반환 계약 — 결과 전체와 각 항목에 origin="web" 이 박혀 있고
+    분리 고지(notice)가 동봉된다: 소비자(에이전트·UI·검증)가 어느 계층에서든
+    사내 규제문서 근거와 구분할 수 있어야 한다(명시와 분리)."""
+    import src.websearch as websearch
+
+    monkeypatch.setattr(websearch, "_fetch_html", lambda q: _DDG_HTML)
+    out = await _call(mcp_server_url, "search_web", {"query": "이상사례 보고 고시 개정", "top_n": 3})
+    assert out["origin"] == "web" and out["notice"]
+    assert len(out["results"]) == 2
+    first = out["results"][0]
+    assert first["origin"] == "web"
+    assert first["title"] == "MFDS 이상사례 보고 고시 개정"       # 태그 제거·엔티티 복원
+    assert first["url"] == "https://example.com/news/1"           # DDG 리다이렉트 해제
+    assert "2026-05-01" in first["snippet"]
+
+
+async def test_search_web_empty_query_is_explicit_error(mcp_server_url):
+    """빈 질의 — search_regulations 와 동일한 {"error","expected"} 계약."""
+    bad = await _call(mcp_server_url, "search_web", {"query": "  "})
+    assert "error" in bad and "expected" in bad and "results" not in bad
+
+
+async def test_search_web_disabled_is_explicit_error(mcp_server_url, monkeypatch):
+    """WEB_SEARCH=0(외부 송신 금지 정책) — 조용한 빈 결과 대신 명시적 에러 계약."""
+    from src import config
+
+    monkeypatch.setattr(config, "WEB_SEARCH_ENABLED", False)
+    bad = await _call(mcp_server_url, "search_web", {"query": "이상사례 최신 동향"})
+    assert "error" in bad and "results" not in bad
+
+
+async def test_search_web_network_failure_is_error_contract(mcp_server_url, monkeypatch):
+    """네트워크 실패는 예외 전파가 아니라 에러 계약 — 예외 '타입명'만 싣고
+    메시지 원문은 싣지 않는다(에러 문구의 요청 정보 에코 차단 규율)."""
+    import src.websearch as websearch
+
+    def _boom(q):
+        raise RuntimeError("secret-proxy-detail")
+
+    monkeypatch.setattr(websearch, "_fetch_html", _boom)
+    bad = await _call(mcp_server_url, "search_web", {"query": "이상사례 최신 동향"})
+    assert "error" in bad and "RuntimeError" in bad["error"]
+    assert "secret-proxy-detail" not in bad["error"]
+
+
+async def test_search_web_query_is_masked_before_sending(mcp_server_url, monkeypatch):
+    """검색 질의는 '외부 검색엔진으로 실제 송신'된다 — 도구 계층 마스킹이
+    송신 전에 적용되는지(에코뿐 아니라 송신 질의 자체)를 캡처로 확인한다."""
+    import src.websearch as websearch
+
+    sent = {}
+
+    def _capture(q):
+        sent["q"] = q
+        return _DDG_HTML
+
+    monkeypatch.setattr(websearch, "_fetch_html", _capture)
+    out = await _call(
+        mcp_server_url, "search_web",
+        {"query": "김철수님 010-1234-5678 케이스 관련 최신 뉴스"},
+    )
+    assert "010-1234-5678" not in sent["q"] and "김철수" not in sent["q"]
+    assert "010-1234-5678" not in out["query"] and "김철수" not in out["query"]
 
 
 async def test_list_documents_contract(mcp_server_url):

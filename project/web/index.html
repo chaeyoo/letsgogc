@@ -199,10 +199,15 @@ function addMsg(role, text) {
 function renderBot(bubble, data) {
   const stick = nearBottom();
   let html = esc(data.answer);
+  const hasWeb = (data.web_results || []).length > 0;
   // 근거 상태 배지: 도구 근거 확보 여부 — 오프라인 모드에서 False 는 회피(abstention),
-  // LLM 모드에서 False 는 모델이 도구 근거 없이 답했다는 뜻(둘 다 실무 참고 금지 신호)
+  // LLM 모드에서 False 는 모델이 도구 근거 없이 답했다는 뜻(둘 다 실무 참고 금지 신호).
+  // 인터넷 검색 답변은 사내 근거가 아니므로 grounded=False 이되, 원인이 다르다 —
+  // '근거 없음'이 아니라 '웹 근거(사내 규정 아님)'로 구분해 표시한다(명시와 분리).
   const gb = data.grounded === false
-    ? `<span class="pill warn">⚠ 도구 근거 없음 — 실무 참고 금지</span>`
+    ? (hasWeb
+        ? `<span class="pill warn">🌐 인터넷 검색 근거 — 사내 규정 근거 아님(원문 확인 필요)</span>`
+        : `<span class="pill warn">⚠ 도구 근거 없음 — 실무 참고 금지</span>`)
     : `<span class="pill ok">✓ 도구 근거 확보</span>`;
   const lat = (typeof data.latency_ms === 'number')
     ? `<span class="pill">⚡ ${data.latency_ms} ms</span>` : '';
@@ -219,6 +224,10 @@ function renderBot(bubble, data) {
       // 이 수치의 지지 근거는 규정·도구가 아니라 사용자의 케이스 서술이다.
       if ((v.case_origin || []).length)
         ver += ` <span class="pill">📝 케이스 서술 유래: ${v.case_origin.map(esc).join(', ')}</span>`;
+      // 웹 유래 지지 라벨: 이 수치의 지지 근거는 사내 규정·도구가 아니라
+      // 인터넷 검색 결과다 — 검증 통과 배지 아래에서 사내 근거처럼 읽히지 않게 구분.
+      if ((v.web_origin || []).length)
+        ver += ` <span class="pill">🌐 웹 검색 유래: ${v.web_origin.map(esc).join(', ')}</span>`;
     } else {
       const qOrigin = new Set(v.question_origin || []);
       const halluc = (v.unsupported || []).filter(c => !qOrigin.has(c));
@@ -243,6 +252,15 @@ function renderBot(bubble, data) {
         const ver = c.version ? ` <span style="opacity:.55">v${esc(c.version)} · 시행 ${esc(c.effective_date||'')}</span>` : '';
         return `<div class="cite"><b>${esc(c.title||'')}</b> › ${esc(c.section||'')} <span style="opacity:.6">(${esc(c.source||'')})</span>${ver}</div>`;
       }).join('') +
+      `</div>`;
+  }
+  // 인터넷 검색 결과는 사내 근거 출처(📄)와 '다른 블록'으로 분리해 그린다 —
+  // 한 목록에 섞으면 웹 결과가 규제문서 출처처럼 읽힌다(명시와 분리).
+  if (hasWeb) {
+    html += `<div class="cites">🌐 인터넷 검색 출처 <span style="opacity:.6">(사내 규제문서 아님)</span>:` +
+      data.web_results.map(w =>
+        `<div class="cite"><b>${esc(w.title||'')}</b> <span style="opacity:.6">${esc(w.url||'')}</span></div>`
+      ).join('') +
       `</div>`;
   }
   bubble.innerHTML = html;

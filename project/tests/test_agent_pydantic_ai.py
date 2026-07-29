@@ -191,6 +191,53 @@ async def test_pa_testmodel_smoke(monkeypatch):
     assert r.grounded is True  # 마감 데이터는 내용 있는 결정론 도구 출력
 
 
+_DDG_HTML = """
+<div class="result">
+  <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnews%2F1&amp;rut=abc">MFDS 이상사례 보고 고시 개정</a>
+  <a class="result__snippet" href="#">개정 고시는 2026-05-01 시행 예정이다.</a>
+</div>
+"""
+
+
+async def test_pa_web_search_refused_without_explicit_request(monkeypatch):
+    """명시 요청 없는 턴의 search_web 호출은 훅에서 에러 계약으로 거부된다 —
+    MCPToolset 은 서버 도구를 그대로 노출하므로(direct 의 도구 목록 필터와
+    다른 봉합선) 실행 관문이 같은 계약('미요청 턴에 웹 검색 없음')을 지킨다."""
+    import src.websearch as websearch
+
+    def _never(q):
+        raise AssertionError("명시 요청 없는 턴에 인터넷 검색이 수행됐다")
+
+    monkeypatch.setattr(websearch, "_fetch_html", _never)
+    _use_backend(monkeypatch, _scripted([
+        [ToolCallPart(tool_name="search_web", args={"query": "이상사례 최신 동향"})],
+        [TextPart(content="사내 규정문서 기준으로는 근거를 찾지 못했습니다.")],
+    ]))
+    r = await RaAgent().chat("이상사례 최신 동향 알려줘")   # 웹 요청 구문 없음
+    assert r.mode == "llm"
+    assert r.web_results == []
+    assert r.grounded is False                # 거부(에러 계약)는 근거가 아니다
+    assert r.tool_calls and r.tool_calls[0].name == "search_web"  # 시도는 기록된다
+
+
+async def test_pa_web_results_are_separated_when_requested(monkeypatch):
+    """명시 요청 턴 — 웹 출력은 web_texts/web_results 로만 흐르고 사내 신뢰
+    소스·grounded 를 오염시키지 않는다(direct 백엔드와 같은 분리 계약)."""
+    import src.websearch as websearch
+
+    monkeypatch.setattr(websearch, "_fetch_html", lambda q: _DDG_HTML)
+    _use_backend(monkeypatch, _scripted([
+        [ToolCallPart(tool_name="search_web", args={"query": "이상사례 보고 고시 개정 뉴스"})],
+        [TextPart(content="🌐 인터넷 검색 결과에 따르면 개정 고시는 2026-05-01 시행 예정입니다.")],
+    ]))
+    r = await RaAgent().chat("이상사례 보고 고시 개정 소식 웹에서 검색해줘")
+    assert r.mode == "llm"
+    assert r.web_results and r.web_results[0]["origin"] == "web"
+    assert r.citations == [] and r.grounded is False
+    assert r.verification["ok"], r.verification
+    assert "2026-05-01" in r.verification["web_origin"]
+
+
 async def test_pa_default_backend_is_direct():
     """AGENT_BACKEND 기본값은 'direct' — 명시적으로 켜지 않으면 PydanticAI 백엔드로
     라우팅되지 않는다(기존 경로·평가 수치 보존 가드)."""

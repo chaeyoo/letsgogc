@@ -128,6 +128,78 @@ async def test_matched_checklist_still_direct():
     assert "[변경허가] 준비 체크리스트" in r.answer
 
 
+# 인터넷 검색 스텁 — 실제 네트워크 없이 오프라인 웹 라우팅 경로를 태운다.
+_DDG_HTML = """
+<div class="result">
+  <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnews%2F1&amp;rut=abc">MFDS 이상사례 보고 고시 개정</a>
+  <a class="result__snippet" href="#">개정 고시는 2026-05-01 시행 예정이다.</a>
+</div>
+"""
+
+
+@pytest.mark.asyncio
+async def test_explicit_web_request_routes_to_search_web_and_separates(monkeypatch):
+    """'인터넷에서 검색해줘'라는 명시 요청 → search_web 라우팅. 결과는 사내
+    근거와 전면 분리된다: 🌐 표시가 본문에, 결과는 citations 가 아닌
+    web_results 로, grounded(사내 근거 배지)는 False 로, 웹 유래 수치는
+    검증에서 경고 대신 web_origin 라벨로."""
+    import src.websearch as websearch
+
+    monkeypatch.setattr(websearch, "_fetch_html", lambda q: _DDG_HTML)
+    agent = RaAgent()
+    r = await agent.chat("이상사례 보고 고시 개정 최신 뉴스 인터넷에서 검색해줘")
+    assert [t.name for t in r.tool_calls] == ["search_web"]
+    assert "🌐 인터넷 검색 결과" in r.answer and "example.com" in r.answer
+    assert r.citations == []                      # 사내 출처 카드에 섞이지 않는다
+    assert r.grounded is False                    # '사내 도구 근거 확보'가 아니다
+    assert r.web_results and r.web_results[0]["origin"] == "web"
+    # 웹 스니펫의 날짜(2026-05-01)는 미확인 경고가 아니라 웹 유래 라벨
+    assert r.verification["ok"], r.verification
+    assert "2026-05-01" in r.verification["web_origin"], r.verification
+
+
+@pytest.mark.asyncio
+async def test_no_web_fallback_without_explicit_request(monkeypatch):
+    """명시 요청이 없으면 — 사내 문서에서 못 찾는 질문도 웹 폴백 없이 종전
+    그대로 회피(abstention)한다. '못 찾으면 못 찾는다고 답한다'의 회귀 가드."""
+    import src.websearch as websearch
+
+    def _never(q):
+        raise AssertionError("명시 요청 없는 턴에 인터넷 검색이 수행됐다")
+
+    monkeypatch.setattr(websearch, "_fetch_html", _never)
+    agent = RaAgent()
+    r = await agent.chat("비트코인 지금 사도 될까요?")
+    assert r.grounded is False and not r.citations          # 종전과 같은 회피
+    assert "search_web" not in [t.name for t in r.tool_calls]
+    assert r.web_results == []
+
+
+@pytest.mark.asyncio
+async def test_web_topic_word_alone_is_not_a_web_request():
+    """질문 '주제'에 인터넷/온라인이 들어가는 것은 검색 요청이 아니다 —
+    외부 송신 경로를 여는 스위치의 오탐 방지(마커는 요청형 구문만)."""
+    agent = RaAgent()
+    r = await agent.chat("의약품 인터넷 판매 광고 규정은?")
+    assert r.tool_calls[0].name == "search_regulations"
+    assert "search_web" not in [t.name for t in r.tool_calls]
+
+
+@pytest.mark.asyncio
+async def test_web_search_failure_is_explicit(monkeypatch):
+    """네트워크 실패·차단 — 조용한 빈 결과 대신 원인을 말하는 실패 안내."""
+    import src.websearch as websearch
+
+    def _boom(q):
+        raise RuntimeError("blocked")
+
+    monkeypatch.setattr(websearch, "_fetch_html", _boom)
+    agent = RaAgent()
+    r = await agent.chat("이상사례 최신 동향 웹에서 검색해줘")
+    assert "인터넷 검색을 수행하지 못했습니다" in r.answer
+    assert r.grounded is False and r.web_results == []
+
+
 def test_strip_echo_removes_all_user_input_fields():
     """도구 출력의 사용자 입력 에코(query·as_of)는 신뢰 소스에서 제외 — query만
     빼고 as_of를 남기면 사용자가 지정한 기준일이 날짜 클레임의 '근거'로 승격된다."""

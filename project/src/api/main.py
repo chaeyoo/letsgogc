@@ -79,6 +79,9 @@ class ChatResponse(BaseModel):
     latency_ms: float = 0.0
     redactions: list[dict] = Field(default_factory=list)  # PII 마스킹 내역(유형·건수만)
     verification: dict = Field(default_factory=dict)  # 답변 사후 검증(수치 대조·버전 점검)
+    # 인터넷 검색 결과(origin="web") — 사내 출처(citations)와 별도 필드로 분리
+    # (명시 요청 턴에만 채워진다 — 웹 결과가 규제문서 출처 카드에 섞이지 않는다)
+    web_results: list[dict] = Field(default_factory=list)
 
 
 @app.get("/health")
@@ -135,6 +138,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         latency_ms=result.latency_ms,
         redactions=result.redactions,
         verification=result.verification,
+        web_results=result.web_results,
     )
 
 

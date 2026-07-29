@@ -239,6 +239,78 @@ def test_claim_nowhere_is_still_unsupported_with_facts_present():
 
 
 # ---------------------------------------------------------------------------
+# 웹 계층(3계층) — 인터넷 검색 결과는 지지 근거로 인정하되 from_web 라벨로 분리
+# ---------------------------------------------------------------------------
+def test_web_only_support_is_labeled_not_warned():
+    """명시 요청된 웹 검색의 재서술은 경고하지 않되(오탐 방지) 사내 규정
+    근거로 승격되지도 않는다 — web_origin 라벨이 그 분리의 검증 계층 표현."""
+    v = verify_answer(
+        "인터넷 검색 결과, 개정 고시는 2026-05-01 시행 예정입니다.",
+        ["규정: 인지일로부터 15일 이내 신속보고"],
+        web_texts=["개정 고시 2026-05-01 시행 예정 (뉴스)"],
+    )
+    assert v.ok                                    # 경고는 아니다
+    assert v.web_origin == ["2026-05-01"]          # 그러나 웹 유래임을 라벨로
+    check = next(c for c in v.checks if c.claim == "2026-05-01")
+    assert check.supported and check.from_web and not check.from_case
+
+
+def test_strict_supported_claim_not_labeled_from_web():
+    """같은 값이 규정 근거에도 있으면 웹 라벨을 붙이지 않는다(strict 우선)."""
+    v = verify_answer(
+        "보고 기한은 15일 이내입니다.",
+        ["인지일로부터 15일 이내 신속보고"],
+        web_texts=["웹 문서에도 15일 이내라고 적혀 있다"],
+    )
+    assert v.ok and v.web_origin == []
+
+
+def test_case_layer_precedes_web_layer():
+    """케이스 서술과 웹 양쪽에만 있는 값은 from_case — 계층 우선순위(규정·도구 >
+    케이스 > 웹)에서 상위 계층이 지지하면 하위 라벨은 붙지 않는다."""
+    v = verify_answer(
+        "케이스상 복용 기간은 30일입니다.",
+        ["규정: 15일 이내"],
+        user_fact_texts=["환자가 30일간 복용"],
+        web_texts=["웹 기사에도 30일 복용 사례"],
+    )
+    assert v.ok and v.case_origin == ["30일"] and v.web_origin == []
+
+
+def test_claim_nowhere_is_still_unsupported_with_web_present():
+    """웹 계층이 있어도 어디에도 없는 값은 종전대로 미확인 경고다 — '웹 검색
+    답변이니 게이트 통과 불요'가 아니라 게이트는 계속 돌고 계층만 분리된다."""
+    v = verify_answer(
+        "보고 기한은 45일 이내입니다.",
+        ["인지일로부터 15일 이내"],
+        web_texts=["무관한 웹 검색 결과 본문"],
+    )
+    assert not v.ok and "45일" in v.unsupported
+
+
+def test_web_origin_is_label_axis_not_blocking():
+    """web_origin 은 case_origin 과 같은 등급 라벨 축 — ok 를 깨지 않고
+    summary 에만 노출된다(라벨 축 정본 등록의 회귀 가드)."""
+    from src.verify.verifier import LABEL_AXES
+
+    assert "web_origin" in LABEL_AXES and "web_origin" not in BLOCKING_AXES
+    v = verify_answer("개정 고시는 2026-05-01 시행", [], web_texts=["2026-05-01 시행"])
+    assert v.ok and v.summary()["web_origin"] == ["2026-05-01"]
+
+
+def test_gate_stats_counts_web_labeled():
+    """web_labeled 계기판 — 웹 유래 지지 응답이 늘면 답변이 사내 규정 대신
+    인터넷 결과에 기대기 시작했다는 신호(라벨은 죽어도 소리가 없다)."""
+    from src.observability import GateStats
+
+    gs = GateStats()
+    gs.record({"ok": True, "checked": 1, "web_origin": ["2026-05-01"]})
+    gs.record({"ok": True, "checked": 1, "web_origin": []})
+    snap = gs.snapshot()
+    assert snap["web_labeled"] == 1
+
+
+# ---------------------------------------------------------------------------
 # 날짜 역할 대조 — 두 날짜가 모두 근거에 있어도 역할(기한↔인지일)이 뒤바뀌면 잡는다
 # ---------------------------------------------------------------------------
 _TOOL_OUT = '{"awareness_date": "2026-07-10", "deadline_date": "2026-07-25", "deadline_days": 15}'

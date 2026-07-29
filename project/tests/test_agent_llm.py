@@ -23,12 +23,18 @@ class _Block:
         self.__dict__.update(kw)
 
 
-def _stub_anthropic(monkeypatch, responses: list) -> None:
-    """messages.create 가 준비된 응답을 순서대로 돌려주는 가짜 anthropic 모듈."""
+def _stub_anthropic(monkeypatch, responses: list, calls: list | None = None) -> None:
+    """messages.create 가 준비된 응답을 순서대로 돌려주는 가짜 anthropic 모듈.
+
+    calls 리스트를 넘기면 create 호출의 kwargs 를 순서대로 담아 준다 —
+    모델에게 '실제로 어떤 도구 목록이 노출됐는가'를 검증하는 용도.
+    """
     state = {"i": 0}
 
     class _Messages:
         async def create(self, **kwargs):
+            if calls is not None:
+                calls.append(kwargs)
             r = responses[state["i"]]
             state["i"] += 1
             return r
@@ -168,6 +174,61 @@ async def test_llm_empty_search_result_is_not_grounded(monkeypatch):
     assert r.mode == "llm"
     assert r.citations == []          # 빈 검색 — 출처 0건
     assert r.grounded is False        # 출처 0건이면 근거 보증 배지도 없다
+
+
+_DDG_HTML = """
+<div class="result">
+  <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnews%2F1&amp;rut=abc">MFDS 이상사례 보고 고시 개정</a>
+  <a class="result__snippet" href="#">개정 고시는 2026-05-01 시행 예정이다.</a>
+</div>
+"""
+
+
+@pytest.mark.asyncio
+async def test_llm_web_tool_hidden_without_explicit_request(monkeypatch):
+    """명시 요청이 없는 턴에는 search_web 이 도구 목록에서 아예 빠진다 —
+    프롬프트 지시(어겨질 수 있는 규칙)가 아니라 도구 가용성으로 강제하는
+    '명시' 쪽 절반의 배선 확인."""
+    calls: list = []
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text="사내 규정 기준으로 답변드립니다."),
+        ]),
+    ], calls)
+    await RaAgent().chat("중대한 이상사례 보고 기한은?")
+    tool_names = [t["name"] for t in calls[0]["tools"]]
+    assert "search_web" not in tool_names
+    assert "search_regulations" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_llm_web_results_are_separated_when_requested(monkeypatch):
+    """명시 요청 턴 — search_web 이 노출·호출되고, 결과는 사내 근거와 분리된다:
+    web_results 별도 필드, citations 비오염, grounded=False(사내 근거 아님),
+    웹 유래 수치는 미확인 경고 대신 web_origin 라벨."""
+    import src.websearch as websearch
+
+    monkeypatch.setattr(websearch, "_fetch_html", lambda q: _DDG_HTML)
+    calls: list = []
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="tool_use", content=[
+            _Block(type="tool_use", id="t1", name="search_web",
+                   input={"query": "이상사례 보고 고시 개정 뉴스"}),
+        ]),
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text=(
+                "🌐 인터넷 검색 결과에 따르면 개정 고시는 2026-05-01 시행 예정입니다 "
+                "(출처: https://example.com/news/1 — 사내 규정 근거 아님)."
+            )),
+        ]),
+    ], calls)
+    r = await RaAgent().chat("이상사례 보고 고시 개정 소식 인터넷에서 검색해줘")
+    assert "search_web" in [t["name"] for t in calls[0]["tools"]]
+    assert r.web_results and r.web_results[0]["origin"] == "web"
+    assert r.citations == []                     # 사내 출처 카드 비오염
+    assert r.grounded is False                   # 웹 결과는 사내 근거 배지 대상이 아니다
+    assert r.verification["ok"], r.verification  # 웹 재서술 날짜에 미확인 오탐이 없다
+    assert "2026-05-01" in r.verification["web_origin"]
 
 
 @pytest.mark.asyncio

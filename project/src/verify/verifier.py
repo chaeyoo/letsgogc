@@ -51,6 +51,13 @@
   근거"로 건너뛰는 비약(사용자 서술의 승격)을 차단이 아니라 가시화로 다룬다
   — 기계는 '케이스 재서술'과 '케이스 수치가 우연히 규정 클레임을 지지'를
   구분할 수 없기 때문이다(구분은 사람의 몫, 라벨은 그 판단을 빠르게).
+  인터넷 검색 결과(web_texts)는 **3번째 계층**이다: 사용자가 명시적으로
+  요청한 웹 검색의 결과를 답변이 재서술하는 것은 정당하므로 지지 근거로
+  인정하되, 그 계층에서'만' 지지되는 클레임은 `from_web` 라벨로 노출한다 —
+  웹 결과가 사내 규정 근거로 조용히 승격되는 것(명시와 분리 원칙의 위반)을
+  게이트를 끄는 대신 라벨로 가시화한다. 검증 게이트 자체는 웹 답변에도
+  그대로 돈다: 어느 계층에도 없는 수치는 여전히 '미확인' 경고다. 방향·역할
+  축의 판정 기준은 종전대로 strict 계층뿐이다(웹 계층은 존재 축에만 참여).
 
 단위의 엄격성:
   '근무일'과 '일'은 **다른 단위**다 — "120 근무일"을 "120일"로 옮기면 실제
@@ -271,6 +278,7 @@ class ClaimCheck:
     evidence: str = ""        # 지원 시 신뢰 소스의 해당 위치 스니펫(사람 대조용)
     from_question: bool = False  # 미확인 수치가 사용자 질문에 있던 값인가(전제 에코)
     from_case: bool = False      # 지지 근거가 '사용자 케이스 서술'뿐인가(승격 라벨)
+    from_web: bool = False       # 지지 근거가 '인터넷 검색 결과'뿐인가(분리 라벨)
 
     def as_dict(self) -> dict:
         return {
@@ -280,6 +288,7 @@ class ClaimCheck:
             "evidence": self.evidence,
             "from_question": self.from_question,
             "from_case": self.from_case,
+            "from_web": self.from_web,
         }
 
 
@@ -335,6 +344,19 @@ class VerificationResult:
         return [c.claim for c in self.checks if c.from_case]
 
     @property
+    def web_origin(self) -> list[str]:
+        """인터넷 검색 결과 계층에서'만' 지지된 클레임(from_web) — 분리 라벨.
+
+        사용자가 명시적으로 요청한 웹 검색의 재서술은 정당하므로 경고하지
+        않는다(경고하면 웹 검색 답변마다 오탐 — alert fatigue). 그러나 웹
+        결과는 사내 규제문서 근거가 아니다 — 이 라벨이 없으면 웹 유래 수치가
+        '수치 검증 통과' 배지 아래에서 사내 근거처럼 읽힌다(명시와 분리
+        원칙이 답변 표시 계층에만 있고 검증 계층에는 없는 비대칭). 감사
+        로그·UI 가 '규정/도구 근거'·'사용자 서술 근거'·'웹 근거'를 구분해
+        읽도록 case_origin 과 같은 등급 라벨로 노출한다."""
+        return [c.claim for c in self.checks if c.from_web]
+
+    @property
     def ok(self) -> bool:
         # ok 는 '차단 축'(BLOCKING_AXES)에서 파생한다(v10) — 종전에는 축을 손으로
         # 나열해, 새 차단 축을 ok 에 배선하면서 WARNING_AXES 에 등록하지 않으면
@@ -353,6 +375,7 @@ class VerificationResult:
             "role_conflicts": self.role_conflicts,
             "question_origin": self.question_origin,
             "case_origin": self.case_origin,
+            "web_origin": self.web_origin,
             "superseded_cited": self.superseded_cited,
             "checks": [c.as_dict() for c in self.checks],
         }
@@ -374,7 +397,7 @@ WARNING_AXES = (
     "unsupported", "direction_conflicts", "role_conflicts",
     "question_origin", "superseded_cited",
 )
-LABEL_AXES = ("case_origin",)
+LABEL_AXES = ("case_origin", "web_origin")
 # ok 를 실패(False)시키는 '차단 축'의 정본(v10) — VerificationResult.ok 는 이
 # 목록에서 파생한다. WARNING_AXES 의 부분집합이어야 하며(전제 라벨
 # question_origin 은 경고 문구만 바꾸는 비차단 축이라 제외), 그 결합은
@@ -552,6 +575,7 @@ def verify_answer(
     question: str = "",
     allowed_superseded_ids: set[str] | None = None,
     user_fact_texts: list[str] | None = None,
+    web_texts: list[str] | None = None,
 ) -> VerificationResult:
     """답변의 수치·날짜 클레임과 방향 한정어를 신뢰 소스와 대조하고 인용 버전을 점검한다.
 
@@ -578,20 +602,39 @@ def verify_answer(
             이 계층에서만 지지되는 클레임은 from_case 로 라벨링한다.
             "케이스는 사실"이 "케이스가 규정 클레임의 근거"로 비약하는 지점을
             차단 대신 가시화하는 2계층 신뢰 소스 설계다.
+        web_texts: 인터넷 검색 결과(search_web 도구 출력) — 사용자가 명시적으로
+            요청한 웹 검색의 재서술은 정당하므로 지지 근거로 인정하되, 이
+            계층에서만 지지되는 클레임은 from_web 으로 라벨링한다(3계층).
+            웹 결과를 trusted_texts 에 섞으면 사내 규정 근거로 조용히 승격되고
+            (분리의 소멸), 아예 빼면 웹 검색 답변마다 '미확인' 오탐이 붙는다
+            (alert fatigue) — 라벨 계층이 그 둘 사이의 유일한 정합 지점이다.
     """
     result = VerificationResult()
 
     strict = _normalize("\n".join(trusted_texts))
     facts = _normalize("\n".join(user_fact_texts)) if user_fact_texts else ""
-    # 결합 텍스트가 종전의 '신뢰 소스' — 지지 판정·스니펫·방향·역할 대조에 쓴다.
-    trusted = f"{strict}\n{facts}" if facts else strict
+    web = _normalize("\n".join(web_texts)) if web_texts else ""
+    # base_facts(strict+케이스)가 종전의 '신뢰 소스', trusted 는 웹 계층까지의
+    # 전체 결합 — 지지 판정·스니펫에 쓴다(방향·역할 판정 기준은 strict 유지).
+    base_facts = f"{strict}\n{facts}" if facts else strict
+    trusted = f"{base_facts}\n{web}" if web else base_facts
     src_nums, src_dates = extract_claims(trusted)
     # strict 계층(규정 근거·도구 출력)만의 클레임 — from_case 라벨의 기준선
-    strict_nums, strict_dates = extract_claims(strict) if facts else (src_nums, src_dates)
+    strict_nums, strict_dates = (
+        extract_claims(strict) if (facts or web) else (src_nums, src_dates)
+    )
+    # strict+케이스 계층까지의 클레임 — from_web 라벨의 기준선(여기 없고
+    # 전체 결합에만 있으면 지지 근거는 웹뿐이다)
+    bf_nums, bf_dates = extract_claims(base_facts) if web else (src_nums, src_dates)
     # 부분 날짜(월-일) 접미 — 완전한 날짜의 월-일 성분도 지지 근거가 된다
     src_partials = _partial_dates(trusted) | {d[5:] for d in src_dates}
     strict_partials = (
-        (_partial_dates(strict) | {d[5:] for d in strict_dates}) if facts else src_partials
+        (_partial_dates(strict) | {d[5:] for d in strict_dates})
+        if (facts or web)
+        else src_partials
+    )
+    bf_partials = (
+        (_partial_dates(base_facts) | {d[5:] for d in bf_dates}) if web else src_partials
     )
     # 방향·역할 대조의 기준은 strict 계층이다 — 케이스 서술(facts)까지 합친
     # 지도로 판정하면, 케이스의 "15일 이후 증상 발생"이 규정의 "15일 이내"
@@ -624,10 +667,16 @@ def verify_answer(
 
     for occ in _occurrences(answer):
         kind = occ.kind
+        # 계층 라벨의 공통 규칙 — strict 에 있으면 무라벨, strict 에는 없고
+        # strict+케이스(base_facts)에 있으면 from_case, 거기에도 없이 전체
+        # 결합(웹 포함)에서만 지지되면 from_web(계층 우선순위: 규정·도구 >
+        # 케이스 서술 > 웹 — 상위 계층이 지지하면 하위 라벨은 붙지 않는다).
+        from_web = False
         if occ.kind == "date":
             supported = occ.display in src_dates
             from_q = (not supported) and occ.display in q_dates
-            from_case = supported and occ.display not in strict_dates
+            from_case = supported and occ.display not in strict_dates and occ.display in bf_dates
+            from_web = supported and occ.display not in bf_dates
             evidence = _snippet(trusted, (occ.display, ""), "date") if supported else ""
         elif occ.kind == "partial_date":
             # 부분 날짜(연도 없음)는 월-일 접미로 대조한다 — 완전한 날짜의
@@ -636,14 +685,18 @@ def verify_answer(
             suffix = occ.forms[0][0]
             supported = suffix in src_partials
             from_q = (not supported) and suffix in q_partials
-            from_case = supported and suffix not in strict_partials
+            from_case = supported and suffix not in strict_partials and suffix in bf_partials
+            from_web = supported and suffix not in bf_partials
             evidence = _snippet(trusted, (suffix, ""), "partial_date") if supported else ""
             kind = "date"
         else:
             hit = next((f for f in occ.forms if f in src_nums), None)
             supported = hit is not None
             evidence = _snippet(trusted, hit, "numeric") if hit else ""
-            from_case = supported and not any(f in strict_nums for f in occ.forms)
+            in_strict = any(f in strict_nums for f in occ.forms)
+            in_bf = any(f in bf_nums for f in occ.forms)
+            from_case = supported and not in_strict and in_bf
+            from_web = supported and not in_bf
             if not supported:
                 # 연도 단독 표기("2025년"): 신뢰 소스의 완전한 날짜(2025-04-01)의
                 # 연도 성분과 값이 같으면 지지로 본다 — 표기 변형이지 환산이
@@ -655,15 +708,20 @@ def verify_answer(
                     if year_date:
                         supported = True
                         evidence = _snippet(trusted, (year_date, ""), "date")
-                        from_case = not (
-                            (num, "년") in strict_nums
-                            or any(d.startswith(num + "-") for d in strict_dates)
+                        y_strict = (num, "년") in strict_nums or any(
+                            d.startswith(num + "-") for d in strict_dates
                         )
+                        y_bf = (num, "년") in bf_nums or any(
+                            d.startswith(num + "-") for d in bf_dates
+                        )
+                        from_case = not y_strict and y_bf
+                        from_web = not y_bf
             from_q = (not supported) and any(f in q_nums for f in occ.forms)
         result.checks.append(
             ClaimCheck(
                 occ.display, kind, supported,
-                evidence=evidence, from_question=from_q, from_case=from_case,
+                evidence=evidence, from_question=from_q,
+                from_case=from_case, from_web=from_web,
             )
         )
 

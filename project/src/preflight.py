@@ -130,6 +130,22 @@ _GATE_SELF_TESTS: tuple[dict, ...] = (
      "trusted": ["보고 기한은 15일 이내"],
      "user_facts": ["환자가 30일간 복용 후 두드러기 발생"],
      "expect_ok": True, "label": "case_origin"},
+    # 웹 계층(3계층) — 인터넷 검색 결과에서'만' 지지되는 클레임은 경고 대신
+    # from_web(web_origin) 라벨이 붙는다: 명시 요청된 웹 검색의 재서술은
+    # 정당하되(경고하면 웹 답변마다 오탐), 사내 규정 근거로 승격되지도 않는다.
+    # 라벨 축이므로 죽어도 소리가 없다 — case_origin 과 같은 이유로 심어 본다.
+    {"name": "웹 유래 지지·정상 라벨(3계층)",
+     "answer": "인터넷 검색 결과에 따르면 개정 고시는 2026-05-01 시행 예정입니다",
+     "trusted": ["보고 기한은 15일 이내"],
+     "web_texts": ["개정 고시 2026-05-01 시행 예정 (뉴스)"],
+     "expect_ok": True, "label": "web_origin"},
+    # 웹 계층이 있어도 어느 계층에도 없는 수치는 여전히 경고다 — '웹 검색을
+    # 썼으니 검증 게이트를 통째로 꺼도 되지 않느냐'는 방향의 퇴행(게이트
+    # 우회)을 기동 전에 잡는 심은 오류.
+    {"name": "웹 계층 존재·심은 오류", "answer": "보고 기한은 30일 이내입니다",
+     "trusted": ["보고 기한은 15일 이내"],
+     "web_texts": ["관련 없는 웹 검색 결과 본문"],
+     "expect_ok": False, "axis": "unsupported"},
     {"name": "날짜 역할 스왑·심은 오류", "answer": "보고 기한: 2026-07-10 (인지일 2026-07-25 기준)",
      "trusted": [_GATE_TOOL_LABELED], "expect_ok": False, "axis": "role_conflicts"},
     {"name": "날짜 역할·정상", "answer": "보고 기한: 2026-07-25 (인지일 2026-07-10 기준)",
@@ -408,6 +424,7 @@ def smoke_checks() -> list[str]:
             t.get("allow_superseded", False),
             question=t.get("question", ""),
             user_fact_texts=t.get("user_facts"),
+            web_texts=t.get("web_texts"),
         )
         s = v.summary()
         if t["expect_ok"]:
@@ -511,7 +528,7 @@ def smoke_checks() -> list[str]:
 
 
 def check_mcp_reachable(timeout_s: float = 60.0) -> list[str]:
-    """API 롤 전용 — 분리된 MCP 서버 기동을 기다린 뒤 도구 6종 노출까지 실연결로 검증.
+    """API 롤 전용 — 분리된 MCP 서버 기동을 기다린 뒤 도구 7종 노출까지 실연결로 검증.
 
     완전 분리 구조에서 API 컨테이너의 가장 흔한 Day-0 실패는 코드가 아니라
     'MCP 서버가 아직 안 떴다/URL 이 틀렸다'이다 — wait-loop 로 기동 순서를
@@ -525,6 +542,7 @@ def check_mcp_reachable(timeout_s: float = 60.0) -> list[str]:
     expected = {
         "search_regulations", "get_ra_deadlines", "get_submission_checklist",
         "assess_adverse_event", "draft_ae_report", "list_regulation_documents",
+        "search_web",
     }
 
     async def _probe() -> set[str]:

@@ -43,6 +43,7 @@ from .agent import (
     _split_user_facts,
     _stringify,
     _summarize,
+    _wants_web_search,
 )
 
 MAX_LLM_REQUESTS = 6  # direct 루프의 6-step 상한과 같은 역할(모델 요청 횟수 상한)
@@ -61,8 +62,15 @@ class PaDeps:
     raw_search_results: list[dict] = field(default_factory=list)
     trusted_texts: list[str] = field(default_factory=list)
     user_facts: list[str] = field(default_factory=list)
+    web_texts: list[str] = field(default_factory=list)    # 웹 검색 출력(검증 3계층)
+    web_results: list[dict] = field(default_factory=list)  # 웹 결과 카드(분리 노출)
     history_doc_ids: set[str] = field(default_factory=set)
     grounded_evidence: bool = False
+    # 이 턴에 사용자가 인터넷 검색을 명시 요청했는가 — direct 백엔드는 도구
+    # 목록에서 search_web 을 빼는 방식으로 강제하지만, MCPToolset 은 서버의
+    # 도구 목록을 그대로 노출하므로 여기서는 실행 관문(훅)에서 막는다(의도된
+    # 구현 차이 — '미요청 턴에 웹 검색이 수행되지 않는다'는 계약은 같다).
+    web_requested: bool = False
 
 
 def _normalize(data: Any) -> Any:
@@ -81,6 +89,16 @@ async def _process_tool_call(
 ) -> ToolResult:
     """도구 호출 1건의 관문 — direct 루프 본문의 북키핑을 같은 헬퍼로 수행한다."""
     deps = ctx.deps
+    if name == "search_web" and not deps.web_requested:
+        # 명시 요청 없는 턴의 인터넷 검색은 실행하지 않는다 — 에러 계약으로
+        # 되먹여 모델이 사내 도구·근거 없음 답변으로 자가 정정하게 한다
+        # (에러 계약 응답은 신뢰 소스에도 쌓이지 않는다 — _is_contract_error).
+        refusal = {
+            "error": "인터넷 검색은 사용자가 명시적으로 요청한 턴에만 사용할 수 있음",
+            "expected": "사내 도구로 조회하고, 근거가 없으면 없다고 답할 것",
+        }
+        deps.tool_calls.append(ToolCall(name, dict(tool_args), _summarize(refusal)))
+        return refusal
     flow(
         "_process_tool_call()",
         "PydanticAI 의 도구 실행 요청 — 실행은 MCPToolset 이 HTTP MCP 서버로 대신한다",
@@ -101,12 +119,19 @@ async def _process_tool_call(
     # ── direct 루프(agent.py _chat_llm)와 동일한 북키핑 ──
     if not _is_contract_error(data):
         # 성공 출력만 신뢰 소스로. 입력 에코(query·as_of)는 버리고 케이스
-        # 서술(case)은 별도 계층(user_facts)으로 — 근거 승격 구멍 차단.
+        # 서술(case)은 별도 바구니(user_facts)로 — 근거 승격 구멍 차단.
+        # 웹 검색 출력은 사내 신뢰 소스가 아니라 웹 계층(web_texts)으로만
+        # 쌓고 grounded 판정에서도 뺀다(direct 루프와 동일한 분리).
         stripped, facts = _split_user_facts(data)
-        deps.trusted_texts.append(_stringify(stripped))
-        deps.user_facts.extend(facts)
-        if _has_evidence(stripped):  # 결과 0건짜리 '성공'은 근거로 안 친다
-            deps.grounded_evidence = True
+        if name == "search_web":
+            deps.web_texts.append(_stringify(stripped))
+            if isinstance(stripped, dict):
+                deps.web_results.extend(stripped.get("results", []))
+        else:
+            deps.trusted_texts.append(_stringify(stripped))
+            deps.user_facts.extend(facts)
+            if _has_evidence(stripped):  # 결과 0건짜리 '성공'은 근거로 안 친다
+                deps.grounded_evidence = True
     if isinstance(data, dict):
         if name == "search_regulations" and "results" in data:
             deps.raw_search_results.append(data)
@@ -180,7 +205,7 @@ async def chat_llm_pydantic(message: str, history: list[dict], trace: Trace) -> 
     북키핑·검증 게이트만 담당한다. mode 는 "llm" 그대로 — API/UI 는 백엔드를
     구분하지 않는다(배너·trace 로만 노출).
     """
-    deps = PaDeps(trace=trace)
+    deps = PaDeps(trace=trace, web_requested=_wants_web_search(message))
     flow(
         "chat_llm_pydantic()",
         "PydanticAI 백엔드 시작 — MCPToolset(HTTP MCP 서버)+UsageLimits 로 tool-use 루프를 프레임워크에 위임",
@@ -238,9 +263,11 @@ async def chat_llm_pydantic(message: str, history: list[dict], trace: Trace) -> 
             tool_calls=deps.tool_calls,
             citations=_collect_citations(deps.tool_calls, deps.raw_search_results),
             grounded=grounded,
+            web_results=deps.web_results,
         ),
         deps.trusted_texts,
         question=_question_context(message, history),
         allowed_superseded_ids=deps.history_doc_ids,
         user_facts=deps.user_facts,
+        web_texts=deps.web_texts,
     )

@@ -21,7 +21,11 @@ RA·PV 담당자는 규제문서의 바다에서 일한다 — "이 변경은 �
 | "이 케이스 KAERS 보고서 초안 만들어줘" | 최소보고요건(ICH E2D) 검증+초안+보완 질문 | **MCP Tool** (draft_ae_report) |
 | "이번 주 마감 임박한 규제 업무는?" | 마감일 D-day 정리 | **MCP Tool** (get_ra_deadlines) |
 | (복합) "GMP 변경인데 뭘 준비하고 언제까지?" | 검색+체크리스트+마감일 조합 | **Agentic Workflow** |
+| "최신 개정 동향 **인터넷에서 검색해줘**" (명시 요청) | 🌐 웹 검색 — 결과를 사내 근거와 분리 표시 | **MCP Tool** (search_web) |
 
+인터넷 검색은 **명시와 분리** 원칙을 따른다 — 사용자가 명시적으로 요청한 턴에만 수행되고(사내
+문서에서 못 찾은 질문은 웹 폴백 없이 그대로 '근거 없음'으로 답한다), 결과는 🌐 표시·별도
+필드(web_results)·검증 라벨(web_origin)로 사내 규제문서 근거와 전 계층에서 구분된다.
 모든 답변에 **출처(문서·섹션·버전)** 부착, 환자 **PII는 입구에서 마스킹**(외부 API·로그 비유출),
 나가는 답변은 **사후 검증 게이트**(수치·날짜·방향·역할 ↔ 근거 대조)를 전수 통과, 기동 전에는
 **preflight**가 데이터·설정·안전장치를 검사해 실패 시 기동을 차단한다.
@@ -44,6 +48,7 @@ flowchart TB
         T4["assess_adverse_event<br/>(PV 트리아지: 중대성+기한<br/>+인과성+코딩)"]
         T5["draft_ae_report<br/>(ICSR 초안: 최소요건 검증<br/>+KAERS 초안)"]
         T6["list_regulation_documents<br/>(문서 목록)"]
+        T7["search_web 🌐<br/>(인터넷 검색 —<br/>명시 요청 전용·결과 분리)"]
         R1["regulation://{doc_id}<br/>(문서 원문 Resource)"]
         P1["pv_case_intake<br/>(케이스 처리 SOP Prompt)"]
     end
@@ -84,7 +89,7 @@ flowchart TB
 | **RAG 최적화** | 구조 청킹, 하이브리드(벡터+BM25), 4신호 리랭킹+섹션 prior, 질의확장, 스윕/ablation 재현 | `src/rag/`, `eval/` |
 | **제약/바이오 산업 이해** | RA·PV 도메인 도구 — RA: 검색·마감·체크리스트 / PV: 트리아지→인과성→코딩(3계층)→ICSR 초안 + 라벨 22케이스 평가 | `src/ra/`, `src/pv/`, `eval/pv_eval.py` |
 | **개인정보 보호** | PII 비식별화 2겹(에이전트 입구+도구 계층) — 한글 직결·조사 표기까지 룩어라운드 경계 | `src/pv/redactor.py` |
-| **MCP / FastMCP** | Tools 6 + Resource + Prompt(3대 primitive), 독립 HTTP 서버(운영)/stdio(Claude Desktop) | `src/mcp_server/server.py` |
+| **MCP / FastMCP** | Tools 7 + Resource + Prompt(3대 primitive), 독립 HTTP 서버(운영)/stdio(Claude Desktop) | `src/mcp_server/server.py` |
 | **Agentic / Function Calling** | tool-use 루프, 도구 에러 자가복구, 오프라인 규칙 라우터 폴백 | `src/agent/agent.py` |
 | **PydanticAI** | 동일 계약(검증 게이트·MCP 도구·grounded 판정)의 병렬 백엔드 — `AGENT_BACKEND=pydantic_ai` 로 직접 구현 루프와 교체·비교 가능, MCPToolset 이 같은 MCP_SERVER_URL(HTTP)에 직결 | `src/agent/pydantic_agent.py` |
 | **FastAPI · 프론트엔드** | `/chat`·`/health` + 단일 페이지 챗 UI(출처·트레이스·검증 배지) | `src/api/`, `web/` |
@@ -93,7 +98,7 @@ flowchart TB
 | **배포 전 점검(FDE Day-0)** | 설정·코퍼스·업무데이터·스모크+안전장치 자가 테스트 — 실패 시 기동 차단 | `src/preflight.py` |
 | **운영 계기판** | 검증 경고율(`warn_rate_checked`)·감사 로그를 `/health` 노출 | `src/observability.py` |
 | **실데이터 인제스트** | PDF→코퍼스 변환 경로(헤딩 휴리스틱+frontmatter, 상용 파서 교체 자리) | `scripts/ingest_pdf.py` |
-| **테스트/CI** | pytest 303케이스(불변식/fuzz 포함) + Actions(preflight+평가 4종 회귀) | `tests/`, 루트 `.github/workflows/ci.yml` |
+| **테스트/CI** | pytest 328케이스(불변식/fuzz 포함) + Actions(preflight+평가 4종 회귀) | `tests/`, 루트 `.github/workflows/ci.yml` |
 
 ## 5. 실행 방법
 
@@ -103,7 +108,7 @@ cd project
 export ANTHROPIC_API_KEY=sk-ant-...   # (선택) LLM 모드 — 없어도 오프라인 grounded 답변으로 항상 동작
 ```
 
-품질 확인: `.venv/bin/python -m src.preflight`(배포 전 점검) · `-m pytest`(303케이스) ·
+품질 확인: `.venv/bin/python -m src.preflight`(배포 전 점검) · `-m pytest`(328케이스) ·
 `-m eval.evaluate / sweep / faithfulness / pv_eval / verify_eval`(평가 5종, 95% CI 병기).
 CI는 매 푸시마다 preflight+테스트+평가 4종을 실행한다. MCP 단독 실행·Claude Desktop 연결은
 [사용자 가이드](description/가이드.md) 참고.
