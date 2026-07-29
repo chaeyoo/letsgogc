@@ -232,6 +232,56 @@ async def test_llm_web_results_are_separated_when_requested(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_max_tokens_is_configured_not_hardcoded(monkeypatch):
+    """생성 상한이 config.LLM_MAX_TOKENS 로 배선된다 — 1024 하드코딩은 2구역
+    (사내 근거 + 🌐 웹) 답변이 중간에 잘리는 값이었다(실배포 실측)."""
+    from src import config
+
+    calls: list = []
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text="사내 규정 기준으로 답변드립니다."),
+        ]),
+    ], calls)
+    await RaAgent().chat("중대한 이상사례 보고 기한은?")
+    assert calls[0]["max_tokens"] == config.LLM_MAX_TOKENS >= 4096
+
+
+@pytest.mark.asyncio
+async def test_llm_truncated_answer_is_marked_not_silent(monkeypatch):
+    """stop_reason=max_tokens 로 잘린 답변은 조용히 나가지 않는다 — 문장이
+    중간에 끊겨도 완결된 답처럼 읽히므로("…필요합" 실측) 절단 표시를 붙인다."""
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="max_tokens", content=[
+            _Block(type="text", text="보고 기한 규정 확인이 필요합"),
+        ]),
+    ])
+    r = await RaAgent().chat("이상사례 보고 절차를 아주 자세히 설명해줘")
+    assert "길이 제한" in r.answer and "잘렸습니다" in r.answer
+
+
+@pytest.mark.asyncio
+async def test_llm_web_marker_backstop_when_model_omits_it(monkeypatch):
+    """웹 결과가 사용된 턴인데 답변 본문에 🌐 표시가 없으면(프롬프트 미준수·
+    길이 절단으로 웹 구역 소실) 분리 고지를 결정론적으로 덧붙인다 — '분리'가
+    모델의 협조에만 의존하지 않게 하는 백스톱."""
+    import src.websearch as websearch
+
+    monkeypatch.setattr(websearch, "_fetch_html", lambda q: _DDG_HTML)
+    _stub_anthropic(monkeypatch, [
+        types.SimpleNamespace(stop_reason="tool_use", content=[
+            _Block(type="tool_use", id="t1", name="search_web",
+                   input={"query": "이상사례 보고 고시 개정 뉴스"}),
+        ]),
+        types.SimpleNamespace(stop_reason="end_turn", content=[
+            _Block(type="text", text="개정 고시는 2026-05-01 시행 예정입니다."),  # 🌐 누락
+        ]),
+    ])
+    r = await RaAgent().chat("이상사례 보고 고시 개정 소식 인터넷에서 검색해줘")
+    assert "🌐" in r.answer and "인터넷 검색 결과가 사용되었습니다" in r.answer
+
+
+@pytest.mark.asyncio
 async def test_llm_api_failure_is_explicit_not_500(monkeypatch):
     """LLM API 호출 실패(잘못된 키·네트워크·모델명)는 예외 전파(HTTP 500)가
     아니라 명시적 안내 답변이 된다 — 가장 흔한 온보딩 실패 경로의 시끄럽고

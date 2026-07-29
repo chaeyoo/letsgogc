@@ -46,6 +46,10 @@ MCP_REQUIRE_AUTH = os.environ.get("MCP_REQUIRE_AUTH", "").strip() in ("1", "true
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-8")
 LLM_AVAILABLE = bool(ANTHROPIC_API_KEY)
+# 응답 생성 토큰 상한 — 1024 는 '사내 근거 구역 + 🌐 웹 구역' 2구역 답변이
+# 중간에 잘리는 값이었다(실배포에서 웹 구역이 통째로 잘려 분리 표시가 사라진
+# 실측). 잘림은 조용히 내보내지 않고 본문에 표시한다(agent 참고).
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
 # LLM 모드의 에이전트 루프 구현 선택 — 'direct'(기본: anthropic SDK 직접 구현 루프)
 # | 'pydantic_ai'(PydanticAI 프레임워크 백엔드). 오프라인 모드는 백엔드 무관.
 AGENT_BACKEND = os.environ.get("AGENT_BACKEND", "direct").strip().lower()

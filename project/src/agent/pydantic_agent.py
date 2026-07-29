@@ -168,6 +168,9 @@ def _build_agent() -> Agent[PaDeps, str]:
         instructions=SYSTEM_PROMPT,
         toolsets=[toolset],
         retries=2,
+        # direct 백엔드와 같은 생성 상한 — 두 백엔드가 같은 길이 예산을 갖는다
+        # (2구역 답변이 프레임워크 기본값에 따라 한쪽만 잘리는 비대칭 방지).
+        model_settings={"max_tokens": config.LLM_MAX_TOKENS},
     )
 
 

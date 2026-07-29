@@ -74,8 +74,9 @@ SYSTEM_PROMPT = (
     "규제 정보(기한·절차)는 정확성이 생명이므로 항상 출처(문서명·섹션)를 함께 제시한다. "
     "인터넷 검색(search_web)은 사용자가 명시적으로 요청한 경우에만 사용한다 — "
     "사내 문서에서 근거를 못 찾았다는 이유로 대신 쓰지 않는다(그 경우 근거 없음을 그대로 답한다). "
-    "웹 검색 결과를 답변에 쓸 때는 반드시 '🌐 인터넷 검색 결과' 표시와 출처 URL 을 붙여 "
-    "사내 규제문서 근거와 구분하고, 두 근거를 한 문장에 섞지 않는다. "
+    "웹 검색 결과를 쓸 때는 답변을 두 구역으로 완전히 분리한다: 사내 규제문서 근거 구역을 "
+    "먼저 쓰고, 웹 내용은 '🌐 인터넷 검색 결과 (사내 규제문서 아님)' 제목의 별도 구역에만 "
+    "쓰며 각 항목에 출처 URL 을 붙인다. 두 구역의 근거를 한 문장·한 문단에 섞지 않는다. "
     "답변은 한국어로, 간결한 실무체로 작성한다."
 )
 
@@ -274,6 +275,15 @@ def _finalize(
     question 을 넘기는 이유: 미확인 수치가 질문에 있던 값이면 '환각'이 아니라
     '전제 확인 필요'로 경고 문구를 조정한다(정정 답변의 오탐 완화).
     """
+    if result.web_results and "🌐" not in result.answer:
+        # 분리 표시의 결정론적 백스톱 — 웹 결과가 사용된 턴인데 답변 본문에
+        # 🌐 구분 표시가 없으면(프롬프트는 어겨질 수 있는 규칙이고, 길이 절단
+        # 으로 웹 구역이 잘려나갈 수도 있다) 표시를 덧붙인다. 본문 어느 대목이
+        # 웹 유래인지는 검증의 web_origin 라벨과 하단 웹 출처 블록이 보완한다.
+        result.answer += (
+            "\n\n🌐 이 답변에는 인터넷 검색 결과가 사용되었습니다 — 사내 규제문서 "
+            "근거가 아니므로, 하단 '인터넷 검색 출처' 목록의 원문을 반드시 확인하세요."
+        )
     v = verify_answer(
         result.answer,
         trusted_texts,
@@ -449,7 +459,7 @@ class RaAgent:
                     with timed(trace, f"llm.step{step}", "llm", {"model": config.LLM_MODEL}):
                         resp = await client.messages.create(
                             model=config.LLM_MODEL,
-                            max_tokens=1024,
+                            max_tokens=config.LLM_MAX_TOKENS,
                             system=SYSTEM_PROMPT,
                             tools=tools,
                             messages=messages,
@@ -493,6 +503,15 @@ class RaAgent:
                     text = "".join(
                         b.text for b in resp.content if b.type == "text"
                     ).strip()
+                    if resp.stop_reason == "max_tokens":
+                        # 잘린 답변을 조용히 내보내지 않는다 — 문장이 중간에 끊긴
+                        # 답변은 뒷부분(예: 🌐 웹 구역)이 통째로 사라져도 사용자
+                        # 에게는 완결된 답처럼 읽힌다(실배포에서 "…필요합"으로
+                        # 끝난 실측 — 조용한 절단은 조용한 폴백과 같은 결함).
+                        text += (
+                            "\n\n⚠ 응답이 길이 제한(max_tokens)에 걸려 여기서 잘렸습니다. "
+                            "질문을 나누어 다시 시도해 주세요."
+                        )
                     flow(
                         "_chat_llm()",
                         "Claude 가 답변 확정(stop_reason≠tool_use) — 루프의 정상 출구, 사후 검증 게이트로",
